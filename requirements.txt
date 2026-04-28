@@ -1,0 +1,14 @@
+# -----------------------------------------------------------
+# PMI Orchestrator Dependencies
+# -----------------------------------------------------------
+
+# Configuration & Templating
+Jinja2>=3.0.0
+PyYAML>=5.4.1
+
+# Core & Networking
+requests>=2.25.1
+urllib3>=1.26.0
+
+# System Monitoring (Dashboard)
+psutil>=5.8.0

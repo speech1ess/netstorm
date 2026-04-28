@@ -1,0 +1,9 @@
+/* --- Стили скроллбара и анимаций --- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #000; }
+::-webkit-scrollbar-thumb { background: #00ff41; border-radius: 10px; }
+
+.cursor-blink { animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+select { -webkit-appearance: none; appearance: none; }

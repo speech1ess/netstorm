@@ -1,0 +1,37 @@
+dev_addr: '0.0.0.0:8001'
+
+site_name: NetStorm v1.0 Load Testing Orchestrator Documentation
+site_description: Документация NetStorm v1.0
+
+theme:
+  name: material
+  # Включаем темную тему
+  palette:
+    scheme: slate
+    primary: teal
+    accent: cyan
+  features:
+    - navigation.tabs # Вкладки сверху
+    - navigation.expand # Разворачивающееся меню
+    - search.suggest # Умный поиск
+
+# Подключаем плагин сниппетов
+markdown_extensions:
+  - pymdownx.snippets
+
+# Структура меню
+nav:
+  - Главная: index.md
+  - Архитектура: 
+      - Навигация: architecture_overview.md
+      - Система в целом: SYSTEM_ARCHITECTURE.md
+      - Маршрутизация и Конфиги: CONFIG_ARCHITECTURE.md
+      - Система отчетов: REPORTS_ARCHITECTURE.md
+  - Модули и компоненты:
+      - Профили атак (profiles): profiles.md
+      - Исполняемые файлы (bin): bin.md
+      - Конфигурации (config): config.md
+      - Дашборды Grafana (dashboards): dashboards.md
+      - Библиотеки (lib): lib.md
+      - Логи и артефакты (logs): logs.md
+      - Веб-интерфейс (web): web.md

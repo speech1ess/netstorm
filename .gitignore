@@ -1,0 +1,55 @@
+# -----------------------------------------------------------
+# NetStorm .gitignore
+# -----------------------------------------------------------
+
+# 1. Логи
+logs/*
+!logs/README.md
+
+# 2. Боевые результаты (оставляем только демо)
+results/*
+!results/README.md
+!results/index.html
+!results/20260323_131637/
+!results/20260323_133008/
+# ВАЖНО: никаких !results/*/** здесь быть не должно!
+
+# 3. Тяжелые артефакты нагрузки и сетевые дампы
+*.jtl
+*.zip
+*.log
+*.csv
+*.pcap
+*.cap
+
+# 4. Временные файлы Python и виртуальные окружения
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 5. IDE, конфигурации и секреты (Security First)
+.env
+.vscode/
+.DS_Store
+
+# 6. Локальные бэкапы и временные копии
+bak/
+*.bak
+*.orig
+*.swp
+*~
+*.tmp
+*.copy
+* copy.*
+* copy *.*
+
+# 7. Специфика сборки и бинарные артефакты
+web/dist/
+payloads/*.bin
+
+# 8. Фикс для вложенных отчетов JMeter
+results/**/content/
+results/**/sbadmin2-*/
+results/**/bower_components/

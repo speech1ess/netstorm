@@ -1,0 +1,198 @@
+title: "NETSTORM ORCHESTRATOR v3.0"
+items:
+
+  # ════════════════════════════════════════════════════════
+  # 1. TEST & SCENARIOS (Боевая часть)
+  # ════════════════════════════════════════════════════════
+  - label: "🎯 Test & Scenarios Execution"
+    type: "submenu"
+    items:
+      - label: "📁 Select PMI Scenarios File (.yaml)"
+        type: "generator"
+        module: "scenario_loader"
+        function: "get_program_selector_menu"
+
+      - label: "PMI Scenarios"
+        type: "generator"
+        module: "scenario_loader"
+        function: "get_dynamic_menu"
+
+  # ════════════════════════════════════════════════════════
+  # 2. PROFILE EXPLORER (Профили трафика)
+  # ════════════════════════════════════════════════════════
+  - label: "🗂️ Profile Explorer (Ad-Hoc Mode)"
+    type: "submenu"
+    items:
+      - type: "generator"
+        module: "tools.profile_explorer"
+        function: "get_explorer_menu"
+
+  # ════════════════════════════════════════════════════════
+  # 3. DIAGNOSTICS & HEALTH (Проверяем систему)
+  # ════════════════════════════════════════════════════════
+  - label: "🛠️ System Status & Diagnostics"
+    type: "submenu"
+    items:
+      - label: "Run Full System Diagnostics"
+        type: "python"
+        module: "monitoring.diagnostics"
+        function: "run_all"
+
+      - label: "Check PMI Services Status"
+        type: "python"
+        module: "tools.config_manager"
+        function: "services"
+
+      - label: "Check Network Namespaces (netns)"
+        type: "python"
+        module: "tools.config_manager"
+        function: "check_netns"
+
+      - label: "Check Kernel Errors (OOM / Drops)"
+        type: "command"
+        cmd: "dmesg -T | tail -n 50 | grep -i -E 'oom|killed|error|drop|fault' || echo '✅ No recent kernel errors detected.'"
+
+  # ════════════════════════════════════════════════════════
+  # 4. CONFIGURATION (Настройка)
+  # ════════════════════════════════════════════════════════
+  - label: "⚙️ Configuration Manager"
+    type: "submenu"
+    items:
+      - label: "🔄 Restart PMI Services"
+        type: "generator"
+        module: "tools.config_manager"
+        function: "get_restart_menu"
+      - label: "🔄 Target Server Mode Selector"
+        type: "submenu"
+        items:
+          - label: "Activate Net Stress Mode (STATIC)"
+            type: "python"
+            module: "tools.target_manager"
+            function: "switch_to_static"
+
+          - label: "Activate CPU Stress Mode (BACKEND)"
+            type: "python"
+            module: "tools.target_manager"
+            function: "switch_to_backend"
+
+          - label: "Check Current Status"
+            type: "python"
+            module: "tools.target_manager"
+            function: "show_status"
+      # --- УПРАВЛЕНИЕ СЕТЬЮ ---
+      - label: "🌐 Network Infrastructure Setup"
+        type: "submenu"
+        items:
+          - label: "Create NetNS & Routes"
+            type: "python"
+            module: "tools.network_setup"
+            function: "setup_jmeter_ns"
+
+          - label: "Provision generator IP Pools"
+            type: "python"
+            module: "tools.network_setup"
+            function: "provision_jmeter_ips"
+
+          - label: "Routing Cheatsheet"
+            type: "python"
+            module: "tools.network_setup"
+            function: "show_routing_cheatsheet"
+
+          - label: "Run Pre-flight Connectivity Checks"      # <--- НОВАЯ КНОПКА
+            type: "python"
+            module: "tools.network_setup"
+            function: "run_preflight_checks"
+
+          - label: "Destroy JMeter NetNS (Teardown)"
+            type: "python"
+            module: "tools.network_setup"
+            function: "teardown_jmeter_ns"
+      # TUI only
+      - label: "View Configuration"
+        type: "python"
+        module: "tools.config_manager"
+        function: "view"
+        ui_target: "tui_only"
+      - label: "Edit Configuration (Nano)"
+        type: "python"
+        module: "tools.config_manager"
+        function: "edit"
+        ui_target: "tui_only"
+
+  # ════════════════════════════════════════════════════════
+  # 5. LOGS, REPORTS & STORAGE
+  # ════════════════════════════════════════════════════════
+  - label: "🗄️ Logs, Reports & Storage"
+    type: "submenu"
+    items:
+      # --- БЛОК 1: Управление веб-сервером ---
+      - label: "🌐 Report Server Management"
+        type: "submenu"
+        items:
+          - label: "Check Nginx & Site Status"
+            type: "command"
+            cmd: "systemctl is-active --quiet nginx && test -e /etc/nginx/sites-enabled/reports && echo '✅ Nginx: UP | Reports Site: ENABLED' || echo '❌ Error: Nginx is down or site is disabled'"
+          
+          - label: "Restart Nginx Service"
+            type: "command"
+            cmd: "sudo systemctl restart nginx && echo '✅ Nginx restarted.'"
+
+      # --- БЛОК 2: Генерация отчетов ---
+      - label: "🛠️ Report Generation"
+        type: "submenu"
+        items:
+          - label: "► Regenerate Dashboard Index"
+            type: "command"
+            cmd: "python3 /opt/pmi/lib/reporting/generate_index.py --generate"
+            
+          - label: "► Regenerate Specific Session"
+            type: "generator"
+            module: "reporting.report_manager"
+            function: "get_session_regen_menu"
+            
+          - label: "► Force Rebuild ALL Reports (Heavy)"
+            type: "python"
+            module: "reporting.report_manager"
+            function: "rebuild_all"
+
+      # --- БЛОК 3: Очистка и место ---
+      - label: "🧹 Storage Management"
+        type: "submenu"
+        items:
+          - label: "Show Disk Usage"
+            type: "command"
+            cmd: "echo '--- PMI Folders ---' && du -sh /opt/pmi/logs /opt/pmi/results && echo '--- Main Disk ---' && df -h /"
+            
+          - label: "Delete ONLY Raw Logs (> 7 Days)"
+            type: "python"
+            module: "reporting.report_manager"
+            function: "clean_raw_logs_7d"
+            
+          - label: "Delete FULL Sessions (Logs + HTML > 30 Days)"
+            type: "python"
+            module: "reporting.report_manager"
+            function: "clean_all_30d"
+
+      # --- БЛОК 4: Автоматизация ---
+      - label: "⏱️ Auto-Rotation Setup (Cron)"
+        type: "submenu"
+        items:
+          - label: "Check Auto-Rotation Status"
+            type: "command"
+            cmd: "crontab -l | grep 'report_manager' || echo 'Auto-rotation is currently DISABLED.'"
+            
+          - label: "Enable: Clean Raw Logs Weekly"
+            type: "python"
+            module: "reporting.report_manager"
+            function: "enable_cron_rotation"
+            
+          - label: "Disable: Turn Off Auto-Rotation"
+            type: "python"
+            module: "reporting.report_manager"
+            function: "disable_cron_rotation"
+
+  # ════════════════════════════════════════════════════════
+  # 6. EXIT
+  # ════════════════════════════════════════════════════════
+  - label: "❌ Exit"
+    type: "exit"

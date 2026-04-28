@@ -1,0 +1,1 @@
+--8<-- "bin/README.md"

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Load Test: 20260323_131637</title>
+    <style>
+        
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #eaeff2; color: #333; margin: 0; padding: 20px; }
+.container { max-width: 1200px; margin: 0 auto; background: white; padding: 0; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); overflow: hidden; }
+
+/* HEADER STYLES */
+.report-header { background: #2c3e50; color: white; padding: 30px 40px; }
+.report-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #bdc3c7; margin-bottom: 10px; }
+.scenario-title { font-size: 28px; font-weight: 700; margin: 0; line-height: 1.2; }
+.session-meta { margin-top: 15px; font-size: 14px; color: #ecf0f1; opacity: 0.8; font-family: monospace; }
+
+/* CONTENT PADDING */
+.content { padding: 40px; }
+
+h2 { color: #34495e; margin-top: 40px; margin-bottom: 20px; font-size: 1.5em; border-left: 5px solid #3498db; padding-left: 15px; }
+
+/* META GRID (KPIs) */
+.meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; margin-bottom: 40px; }
+.meta-card { background: #f8f9fa; padding: 20px; border-radius: 8px; border: 1px solid #eee; }
+.meta-label { font-size: 11px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+.meta-value { font-size: 24px; font-weight: 700; color: #2c3e50; }
+
+/* TABLES */
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 14px; }
+th { text-align: left; background: #ecf0f1; padding: 12px 15px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; font-size: 12px; }
+td { padding: 12px 15px; border-bottom: 1px solid #eee; vertical-align: middle; }
+tr:hover td { background: #fdfdfd; }
+
+/* STATUS BADGES */
+.status-pass { color: #27ae60; font-weight: bold; background: rgba(39, 174, 96, 0.1); padding: 4px 8px; border-radius: 4px; display: inline-block; }
+.status-fail { color: #e74c3c; font-weight: bold; background: rgba(231, 76, 60, 0.1); padding: 4px 8px; border-radius: 4px; display: inline-block; }
+
+/* ITERATION CARDS */
+.iter-card { border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 30px; overflow: hidden; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
+.iter-header { background: #f8f9fa; padding: 15px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+.iter-title { font-weight: 700; font-size: 16px; color: #2c3e50; }
+.iter-meta { font-size: 13px; color: #7f8c8d; font-family: monospace; }
+.iter-body { padding: 20px; }
+
+/* LOG VIEWER */
+.log-view { background: #2c3e50; color: #f1f1f1; padding: 15px; margin: 0; font-family: monospace; font-size: 12px; overflow-x: auto; max-height: 600px; white-space: pre-wrap; }
+
+/* BUTTONS & LINKS */
+.btn-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { display: inline-flex; align-items: center; padding: 6px 12px; background: #fff; color: #2c3e50; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 500; border: 1px solid #bdc3c7; transition: all 0.2s; }
+.btn:hover { background: #f1f2f6; border-color: #95a5a6; }
+
+/* Primary (HTML Report) */
+.btn-primary { background: #3498db; color: white; border-color: #2980b9; }
+.btn-primary:hover { background: #2980b9; color: white; }
+
+/* Console Log (Dark style) */
+.btn-console { background: #34495e; color: #ecf0f1; border-color: #2c3e50; font-family: monospace; }
+.btn-console:hover { background: #2c3e50; color: white; }
+
+.footer { margin-top: 50px; text-align: center; color: #bdc3c7; font-size: 12px; padding-bottom: 20px; }
+
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="report-header">
+        <div class="report-label">Load Testing Report</div>
+        <div class="scenario-title">ICMP Flood [L3_ICMP] + Baseline (High)</div>
+        <div class="session-meta">SESSION ID: 20260323_131637</div>
+    </div>
+
+    <div class="content">
+        <div class="meta-grid">
+            <div class="meta-card">
+                <div class="meta-label">Start Time</div>
+                <div class="meta-value" style="font-size:18px">13:16:37</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Total Duration</div>
+                <div class="meta-value">0:06:47</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Iterations</div>
+                <div class="meta-value">1</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Total Tests</div>
+                <div class="meta-value" style="color:#2980b9;">2</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Avg Session RPS</div>
+                <div class="meta-value">1053.9</div>
+            </div>
+        </div>
+
+        <h2>Execution Overview</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th width="40">#</th>
+                    <th>Start Time</th>
+                    <th>Duration</th>
+                    <th>Load Config</th>
+                    <th>Actual RPS</th>
+                    <th>Errors</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+            <tr>
+                <td>1</td>
+                <td>13:16:38</td>
+                <td>300.0s</td>
+                <td><b>JMETER</b>: 1200 RPS</td>
+                <td>1,053.9 / 1200</td>
+                <td style="color:#e74c3c; font-weight:bold;">616 (0.15%)</td>
+                <td><span class="status-fail">FAIL</span></td>
+            </tr>
+            
+            <tr>
+                <td>2</td>
+                <td>13:16:53</td>
+                <td>300.0s</td>
+                <td><b>TREX</b>: x15000</td>
+                <td>TX: 14,934,333<br>RX: 1</td>
+                <td style="color:#27ae60; font-weight:bold;">Leakage: 0.00%</td>
+                <td><span class="status-pass">BLOCKED</span></td>
+            </tr>
+            
+            </tbody>
+        </table>
+
+        <h2>Artifacts & Downloads</h2>
+        
+        <div class="iter-card">
+            <div class="iter-header"><span class="iter-title">Iteration #1 Artifacts</span></div>
+            <div class="iter-body">
+            <div style="margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:10px;">
+                <div style="font-weight:bold; color:#555; margin-bottom:5px; font-size:13px;">
+                    <span style="color:#2980b9;">JMETER</span> - jmeter_baseline_131638.log
+                </div>
+                <div style="display:flex; gap:10px;"><a href="jmeter_baseline_131638.log" class="btn btn-console" target="_blank">JMeter Console</a> <a href="jmeter_baseline_131638.jtl" class="btn btn" target="_blank">Raw JTL</a> <a href="jmeter_baseline_131638_report/index.html" class="btn btn-primary" target="_blank">HTML Report</a> </div>
+            </div>
+            
+            <div style="margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:10px;">
+                <div style="font-weight:bold; color:#555; margin-bottom:5px; font-size:13px;">
+                    <span style="color:#2980b9;">TREX</span> - trex_icmp_flood_131638.log
+                </div>
+                <div style="display:flex; gap:10px;"><a href="trex_icmp_flood_131638.log" class="btn btn-console" target="_blank">TRex Console</a> </div>
+            </div>
+            </div>
+        </div>
+        
+
+        
+
+        <h2>Session Details (Log)</h2>
+        
+    <div class="iter-card">
+        <div class="iter-header"><span class="iter-title">Full Session Log</span></div>
+        <div class="iter-body" style="padding:0;">
+            <pre class="log-view">13:16:37 INFO  === ORCHESTRATOR START: ICMP Flood [L3_ICMP] + Baseline (High) (SINGLE) ===
+13:16:37 INFO  SESSION ID: 20260323_131637
+13:16:38 INFO  Execution started. Duration: 300s
+13:16:38 INFO  Spawn: JMETER -> jmeter_baseline_131638.log (Tput/Mult: 1200/1)
+13:16:38 INFO  TRex command generated: /usr/bin/python3 /opt/pmi/lib/trex_runner.py /opt/pmi/profiles/trex/stl_icmp_flood.py 15000 300 trex_icmp_flood_131638
+13:16:38 INFO  Waiting 15s delay before trex...
+13:16:38 INFO  JMETER START: baseline (ID: jmeter_baseline_131638) (in netns: vlan500-jmeter)
+13:16:38 DEBUG CMD: ip netns exec vlan500-jmeter /opt/jmeter/bin/jmeter -n -t /opt/pmi/profiles/jmeter/00_baseline.jmx -l /opt/pmi/results/20260323_131637/jmeter_baseline_131638.jtl -j /opt/pmi/results/20260323_131637/jmeter_baseline_131638_internal.log -JTHREADS=50 -JTARGET_RPS=1200 -JDURATION_SEC=300 -Jrun_id=jmeter_baseline_131638 -e -o /opt/pmi/results/20260323_131637/jmeter_baseline_131638_report -JRAMPUP_SEC=90
+13:16:39 DEBUG [JMeter] WARN StatusConsoleListener The use of package scanning to locate plugins is deprecated and will be removed in a future release
+13:16:39 DEBUG [JMeter] WARN StatusConsoleListener The use of package scanning to locate plugins is deprecated and will be removed in a future release
+13:16:39 DEBUG [JMeter] WARN StatusConsoleListener The use of package scanning to locate plugins is deprecated and will be removed in a future release
+13:16:39 DEBUG [JMeter] WARN StatusConsoleListener The use of package scanning to locate plugins is deprecated and will be removed in a future release
+13:16:40 DEBUG [JMeter] Warning: Nashorn engine is planned to be removed from a future JDK release
+13:16:40 DEBUG [JMeter] Creating summariser <summary>
+13:16:40 DEBUG [JMeter] Created the tree successfully using /opt/pmi/profiles/jmeter/00_baseline.jmx
+13:16:40 DEBUG [JMeter] Starting standalone test @ 2026 Mar 23 13:16:40 MSK (1774261000769)
+13:16:40 DEBUG [JMeter] Waiting for possible Shutdown/StopTestNow/HeapDump/ThreadDump message on port 4445
+13:16:40 DEBUG [JMeter] Warning: Nashorn engine is planned to be removed from a future JDK release
+13:16:53 INFO  Spawn: TREX -> trex_icmp_flood_131638.log (Tput/Mult: 100/15000)
+13:16:53 INFO  TREX START: stl_icmp_flood.py (ID: trex_icmp_flood_131638)
+13:16:54 INFO  Setting L3 mode for ports [0, 1]...
+13:16:55 INFO  Port 0: Configuring L3 (src: 10.0.50.3, dst: 10.0.50.2)
+13:16:55 INFO  Port 1: Configuring L3 (src: 10.0.70.2, dst: 10.0.70.1)
+13:16:58 INFO  Triggering ARP resolve for ports [0, 1]...
+13:17:00 INFO  [JMeter] summary +   1742 in 00:00:18 =   95.4/s Avg:    48 Min:     1 Max:   243 Err:     0 (0.00%) Active: 50 Started: 50 Finished: 0
+13:17:01 INFO  [OK] Port 0: L3 state updated. Check debug info if traffic fails.
+13:17:01 INFO  Port 0 attributes: {'cores': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], 'description': 'MT28800 Family [ConnectX-5 Ex]', 'driver': 'net_mlx5', 'hw_mac': 'b8:ce:f6:83:98:ab', 'index': 0, 'is_fc_supported': False, 'is_ieee1588_supported': 'no', 'is_led_supported': False, 'is_link_supported': True, 'is_prom_supported': True, 'is_virtual': 'no', 'is_vxlan_supported': 'no', 'numa': 0, 'pci_addr': '0000:31:00.1', 'rx': {'caps': ['flow_stats', 'latency', 'rx_bytes'], 'counters': 127}, 'stack': 'linux_based', 'supp_speeds': [1000, 10000, 25000, 40000, 100000], 'status': 'IDLE', 'link': 'UP', 'fc': 'none', 'prom': 'off', 'mult': 'on', 'vxlan_fs': '-', 'fc_supported': 'no', 'prom_supported': 'yes', 'led_change_supported': 'no', 'link_change_supported': 'yes', 'speed': 100.0, 'vlan': '-', 'rx_filter_mode': 'fetch all', 'src_mac': 'b8:ce:f6:83:98:ab', 'layer_mode': 'IPv4', 'src_ipv4': '10.0.50.3', 'dest': '10.0.50.2', 'arp': 'ec:b1:e0:e7:cb:00', 'ipv6': 'off', 'rx_queue': 'off', 'grat_arp': 'off'}
+13:17:01 INFO  [OK] Port 1: L3 state updated. Check debug info if traffic fails.
+13:17:01 INFO  Port 1 attributes: {'cores': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], 'description': 'MT28800 Family [ConnectX-5 Ex]', 'driver': 'net_mlx5', 'hw_mac': 'b8:ce:f6:83:98:aa', 'index': 1, 'is_fc_supported': False, 'is_ieee1588_supported': 'no', 'is_led_supported': False, 'is_link_supported': True, 'is_prom_supported': True, 'is_virtual': 'no', 'is_vxlan_supported': 'no', 'numa': 0, 'pci_addr': '0000:31:00.0', 'rx': {'caps': ['flow_stats', 'latency', 'rx_bytes'], 'counters': 127}, 'stack': 'linux_based', 'supp_speeds': [1000, 10000, 25000, 40000, 100000], 'status': 'IDLE', 'link': 'UP', 'fc': 'none', 'prom': 'off', 'mult': 'on', 'vxlan_fs': '-', 'fc_supported': 'no', 'prom_supported': 'yes', 'led_change_supported': 'no', 'link_change_supported': 'yes', 'speed': 100.0, 'vlan': '-', 'rx_filter_mode': 'fetch all', 'src_mac': 'b8:ce:f6:83:98:aa', 'layer_mode': 'IPv4', 'src_ipv4': '10.0.70.2', 'dest': '10.0.70.1', 'arp': '6c:13:d5:ac:c2:df', 'ipv6': 'off', 'rx_queue': 'off', 'grat_arp': 'off'}
+13:17:01 INFO  Service mode disabled. Loading profile.
+13:17:02 INFO  [  1s] TX: 3.72M pps (2.3Gbps) | RX: 1 pps
+13:17:05 INFO  [  4s] TX: 13.62M pps (8.5Gbps) | RX: 1 pps
+13:17:08 INFO  [  7s] TX: 14.87M pps (9.3Gbps) | RX: 0 pps
+13:17:11 INFO  [ 10s] TX: 14.95M pps (9.3Gbps) | RX: 1 pps
+13:17:15 INFO  [ 13s] TX: 15.04M pps (9.4Gbps) | RX: 0 pps
+13:17:18 INFO  [ 16s] TX: 15.03M pps (9.4Gbps) | RX: 1 pps
+13:17:21 INFO  [ 19s] TX: 15.00M pps (9.4Gbps) | RX: 0 pps
+13:17:24 INFO  [ 22s] TX: 14.95M pps (9.3Gbps) | RX: 1 pps
+13:17:27 INFO  [ 25s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:17:30 INFO  [JMeter] summary +  12598 in 00:00:30 =  419.9/s Avg:    35 Min:     0 Max:  5005 Err:    33 (0.26%) Active: 50 Started: 50 Finished: 0
+13:17:30 INFO  [JMeter] summary =  14340 in 00:00:48 =  297.2/s Avg:    37 Min:     0 Max:  5005 Err:    33 (0.23%)
+13:17:30 INFO  [ 29s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:17:33 INFO  [ 32s] TX: 15.01M pps (9.4Gbps) | RX: 1 pps
+13:17:36 INFO  [ 35s] TX: 15.04M pps (9.4Gbps) | RX: 1 pps
+13:17:39 INFO  [ 38s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:17:43 INFO  [ 41s] TX: 14.98M pps (9.3Gbps) | RX: 0 pps
+13:17:46 INFO  [ 44s] TX: 15.04M pps (9.4Gbps) | RX: 1 pps
+13:17:49 INFO  [ 47s] TX: 14.97M pps (9.3Gbps) | RX: 0 pps
+13:17:52 INFO  [ 50s] TX: 15.03M pps (9.4Gbps) | RX: 1 pps
+13:17:55 INFO  [ 53s] TX: 14.97M pps (9.3Gbps) | RX: 1 pps
+13:17:58 INFO  [ 57s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:18:00 INFO  [JMeter] summary +  24561 in 00:00:30 =  818.8/s Avg:    28 Min:     0 Max:  5005 Err:    43 (0.18%) Active: 50 Started: 50 Finished: 0
+13:18:00 INFO  [JMeter] summary =  38901 in 00:01:18 =  497.1/s Avg:    31 Min:     0 Max:  5005 Err:    76 (0.20%)
+13:18:01 INFO  [ 60s] TX: 15.04M pps (9.4Gbps) | RX: 1 pps
+13:18:04 INFO  [ 63s] TX: 14.97M pps (9.3Gbps) | RX: 0 pps
+13:18:08 INFO  [ 66s] TX: 15.02M pps (9.4Gbps) | RX: 1 pps
+13:18:11 INFO  [ 69s] TX: 14.99M pps (9.4Gbps) | RX: 0 pps
+13:18:14 INFO  [ 72s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:18:17 INFO  [ 75s] TX: 14.98M pps (9.3Gbps) | RX: 0 pps
+13:18:20 INFO  [ 78s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:18:23 INFO  [ 81s] TX: 14.99M pps (9.4Gbps) | RX: 0 pps
+13:18:26 INFO  [ 85s] TX: 15.02M pps (9.4Gbps) | RX: 1 pps
+13:18:29 INFO  [ 88s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:18:30 INFO  [JMeter] summary +  34756 in 00:00:30 = 1158.5/s Avg:    23 Min:     0 Max:  5006 Err:    72 (0.21%) Active: 50 Started: 50 Finished: 0
+13:18:30 INFO  [JMeter] summary =  73657 in 00:01:48 =  680.4/s Avg:    27 Min:     0 Max:  5006 Err:   148 (0.20%)
+13:18:32 INFO  [ 91s] TX: 14.98M pps (9.3Gbps) | RX: 0 pps
+13:18:36 INFO  [ 94s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:18:39 INFO  [ 97s] TX: 15.04M pps (9.4Gbps) | RX: 0 pps
+13:18:42 INFO  [100s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:18:45 INFO  [103s] TX: 14.97M pps (9.3Gbps) | RX: 1 pps
+13:18:48 INFO  [106s] TX: 15.01M pps (9.4Gbps) | RX: 1 pps
+13:18:51 INFO  [110s] TX: 15.00M pps (9.4Gbps) | RX: 0 pps
+13:18:54 INFO  [113s] TX: 15.01M pps (9.4Gbps) | RX: 1 pps
+13:18:57 INFO  [116s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:19:00 INFO  [JMeter] summary +  35861 in 00:00:30 = 1195.4/s Avg:    23 Min:     0 Max:  5006 Err:    59 (0.16%) Active: 50 Started: 50 Finished: 0
+13:19:00 INFO  [JMeter] summary = 109518 in 00:02:18 =  792.2/s Avg:    26 Min:     0 Max:  5006 Err:   207 (0.19%)
+13:19:00 INFO  [119s] TX: 15.03M pps (9.4Gbps) | RX: 0 pps
+13:19:04 INFO  [122s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:19:07 INFO  [125s] TX: 14.97M pps (9.3Gbps) | RX: 1 pps
+13:19:10 INFO  [128s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:19:13 INFO  [131s] TX: 15.02M pps (9.4Gbps) | RX: 0 pps
+13:19:16 INFO  [134s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:19:19 INFO  [138s] TX: 14.93M pps (9.3Gbps) | RX: 1 pps
+13:19:22 INFO  [141s] TX: 15.01M pps (9.4Gbps) | RX: 0 pps
+13:19:25 INFO  [144s] TX: 14.98M pps (9.3Gbps) | RX: 2 pps
+13:19:29 INFO  [147s] TX: 14.98M pps (9.3Gbps) | RX: 0 pps
+13:19:30 INFO  [JMeter] summary +  35959 in 00:00:30 = 1198.6/s Avg:    23 Min:     0 Max:  5005 Err:    64 (0.18%) Active: 50 Started: 50 Finished: 0
+13:19:30 INFO  [JMeter] summary = 145477 in 00:02:48 =  864.6/s Avg:    25 Min:     0 Max:  5006 Err:   271 (0.19%)
+13:19:32 INFO  [150s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:19:35 INFO  [153s] TX: 15.02M pps (9.4Gbps) | RX: 1 pps
+13:19:38 INFO  [156s] TX: 14.98M pps (9.4Gbps) | RX: 1 pps
+13:19:41 INFO  [159s] TX: 15.00M pps (9.4Gbps) | RX: 0 pps
+13:19:44 INFO  [163s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:19:47 INFO  [166s] TX: 14.98M pps (9.4Gbps) | RX: 1 pps
+13:19:50 INFO  [169s] TX: 15.02M pps (9.4Gbps) | RX: 0 pps
+13:19:53 INFO  [172s] TX: 14.97M pps (9.3Gbps) | RX: 1 pps
+13:19:57 INFO  [175s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:20:00 INFO  [JMeter] summary +  35943 in 00:00:30 = 1198.1/s Avg:    22 Min:     0 Max:  1036 Err:    60 (0.17%) Active: 50 Started: 50 Finished: 0
+13:20:00 INFO  [JMeter] summary = 181420 in 00:03:18 =  915.1/s Avg:    24 Min:     0 Max:  5006 Err:   331 (0.18%)
+13:20:00 INFO  [178s] TX: 15.04M pps (9.4Gbps) | RX: 1 pps
+13:20:03 INFO  [181s] TX: 14.96M pps (9.3Gbps) | RX: 0 pps
+13:20:06 INFO  [184s] TX: 15.05M pps (9.4Gbps) | RX: 1 pps
+13:20:09 INFO  [187s] TX: 14.98M pps (9.3Gbps) | RX: 0 pps
+13:20:12 INFO  [191s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:20:15 INFO  [194s] TX: 14.97M pps (9.3Gbps) | RX: 1 pps
+13:20:18 INFO  [197s] TX: 15.00M pps (9.4Gbps) | RX: 0 pps
+13:20:22 INFO  [200s] TX: 15.04M pps (9.4Gbps) | RX: 1 pps
+13:20:25 INFO  [203s] TX: 14.97M pps (9.3Gbps) | RX: 0 pps
+13:20:28 INFO  [206s] TX: 14.95M pps (9.3Gbps) | RX: 1 pps
+13:20:30 INFO  [JMeter] summary +  35958 in 00:00:30 = 1198.6/s Avg:    22 Min:     0 Max:  1032 Err:    67 (0.19%) Active: 50 Started: 50 Finished: 0
+13:20:30 INFO  [JMeter] summary = 217378 in 00:03:48 =  952.4/s Avg:    24 Min:     0 Max:  5006 Err:   398 (0.18%)
+13:20:31 INFO  [209s] TX: 14.96M pps (9.3Gbps) | RX: 0 pps
+13:20:34 INFO  [212s] TX: 14.98M pps (9.4Gbps) | RX: 1 pps
+13:20:37 INFO  [215s] TX: 15.00M pps (9.4Gbps) | RX: 0 pps
+13:20:40 INFO  [219s] TX: 15.00M pps (9.4Gbps) | RX: 0 pps
+13:20:43 INFO  [222s] TX: 15.03M pps (9.4Gbps) | RX: 1 pps
+13:20:46 INFO  [225s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:20:50 INFO  [228s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:20:53 INFO  [231s] TX: 15.04M pps (9.4Gbps) | RX: 0 pps
+13:20:56 INFO  [234s] TX: 14.96M pps (9.3Gbps) | RX: 1 pps
+13:20:59 INFO  [237s] TX: 14.99M pps (9.4Gbps) | RX: 0 pps
+13:21:00 INFO  [JMeter] summary +  35942 in 00:00:30 = 1198.0/s Avg:    23 Min:     0 Max:  5005 Err:    68 (0.19%) Active: 50 Started: 50 Finished: 0
+13:21:00 INFO  [JMeter] summary = 253320 in 00:04:18 =  980.9/s Avg:    24 Min:     0 Max:  5006 Err:   466 (0.18%)
+13:21:02 INFO  [240s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:21:05 INFO  [244s] TX: 14.96M pps (9.3Gbps) | RX: 1 pps
+13:21:08 INFO  [247s] TX: 14.97M pps (9.3Gbps) | RX: 0 pps
+13:21:11 INFO  [250s] TX: 15.01M pps (9.4Gbps) | RX: 1 pps
+13:21:14 INFO  [253s] TX: 15.04M pps (9.4Gbps) | RX: 0 pps
+13:21:18 INFO  [256s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:21:21 INFO  [259s] TX: 14.97M pps (9.3Gbps) | RX: 0 pps
+13:21:24 INFO  [262s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:21:27 INFO  [265s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:21:30 INFO  [JMeter] summary +  35968 in 00:00:30 = 1199.0/s Avg:    23 Min:     0 Max:  5005 Err:    74 (0.21%) Active: 50 Started: 50 Finished: 0
+13:21:30 INFO  [JMeter] summary = 289288 in 00:04:48 = 1003.6/s Avg:    24 Min:     0 Max:  5006 Err:   540 (0.19%)
+13:21:30 INFO  [268s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:21:33 INFO  [272s] TX: 15.05M pps (9.4Gbps) | RX: 1 pps
+13:21:36 INFO  [275s] TX: 14.98M pps (9.3Gbps) | RX: 1 pps
+13:21:39 INFO  [278s] TX: 14.97M pps (9.3Gbps) | RX: 1 pps
+13:21:43 INFO  [281s] TX: 15.02M pps (9.4Gbps) | RX: 1 pps
+13:21:46 INFO  [284s] TX: 15.03M pps (9.4Gbps) | RX: 1 pps
+13:21:49 INFO  [287s] TX: 15.03M pps (9.4Gbps) | RX: 0 pps
+13:21:52 INFO  [290s] TX: 14.94M pps (9.3Gbps) | RX: 1 pps
+13:21:55 INFO  [293s] TX: 15.00M pps (9.4Gbps) | RX: 1 pps
+13:21:58 INFO  [297s] TX: 14.99M pps (9.4Gbps) | RX: 1 pps
+13:22:00 INFO  [JMeter] summary +  35958 in 00:00:30 = 1198.6/s Avg:    22 Min:     0 Max:  5004 Err:    71 (0.20%) Active: 50 Started: 50 Finished: 0
+13:22:00 INFO  [JMeter] summary = 325246 in 00:05:18 = 1022.0/s Avg:    24 Min:     0 Max:  5006 Err:   611 (0.19%)
+13:22:01 INFO  [300s] TX: 14.11M pps (8.8Gbps) | RX: 1 pps
+13:22:02 INFO  [OK] TRex test finished.
+13:22:30 INFO  [JMeter] summary +  35962 in 00:00:30 = 1198.7/s Avg:    24 Min:     0 Max:  5003 Err:     2 (0.01%) Active: 50 Started: 50 Finished: 0
+13:22:30 INFO  [JMeter] summary = 361208 in 00:05:48 = 1037.2/s Avg:    24 Min:     0 Max:  5006 Err:   613 (0.17%)
+13:23:00 INFO  [JMeter] summary +  35909 in 00:00:30 = 1197.0/s Avg:    24 Min:     0 Max:  5006 Err:     3 (0.01%) Active: 50 Started: 50 Finished: 0
+13:23:00 INFO  [JMeter] summary = 397117 in 00:06:18 = 1049.9/s Avg:    24 Min:     0 Max:  5006 Err:   616 (0.16%)
+13:23:12 INFO  [JMeter] summary +  14480 in 00:00:12 = 1178.0/s Avg:    24 Min:     0 Max:   367 Err:     0 (0.00%) Active: 0 Started: 50 Finished: 50
+13:23:12 INFO  [JMeter] summary = 411597 in 00:06:31 = 1053.9/s Avg:    24 Min:     0 Max:  5006 Err:   616 (0.15%)
+13:23:12 DEBUG [JMeter] Tidying up ...    @ 2026 Mar 23 13:23:12 MSK (1774261392293)
+13:23:23 DEBUG [JMeter] ... end of run
+13:23:24 INFO  [OK] JMeter finished. JTL: jmeter_baseline_131638.jtl
+13:23:24 INFO  Iteration execution finished.
+13:23:24 INFO  [OK] Orchestrator finished: I1
+13:23:24 INFO  Generating report in background...
+</pre>
+        </div>
+    </div>
+    
+
+        <div class="footer">
+            Generated by PMI Orchestrator | 2026-03-23 13:23:24
+        </div>
+    </div>
+</div>
+</body>
+</html>

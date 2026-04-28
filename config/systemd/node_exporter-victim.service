@@ -1,0 +1,19 @@
+[Unit]
+Description=Node Exporter + Tunnel (Victim)
+After=network.target
+
+[Service]
+User=root
+# Запускаем сразу связку: Экспортер внутри <-> Туннель наружу
+# Используем bash, чтобы запустить два процесса.
+# 1. Запускаем node_exporter в фоне внутри netns
+# 2. Запускаем socat на переднем плане, который проксирует трафик
+ExecStart=/bin/bash -c '\
+  ip netns exec webserver /usr/local/bin/node_exporter --web.listen-address=":9101" --collector.disable-defaults --collector.netdev --collector.netstat --collector.loadavg & \
+  sleep 2; \
+  exec /usr/bin/socat TCP-LISTEN:9101,fork,bind=127.0.0.1 EXEC:"ip netns exec webserver socat STDIO TCP:127.0.0.1:9101"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,680 @@
+# ═══════════════════════════════════════════════════════════
+# ПРОГРАММА И МЕТОДИКА ИСПЫТАНИЙ (ПМИ)
+# DUT: Anti-DDoS Appliance (Generic)
+# ═══════════════════════════════════════════════════════════
+
+# ==============================================================================
+# 1. ОПИСАНИЕ ПРОГРАММЫ ИСПЫТАНИЙ
+# ==============================================================================
+program:
+  description: "Тестирование Anti-DDoS (БИФИТ МИТИГАТОР)"
+  
+  dut:
+    label: "Кластер 2 х БИФИТ Митигатор v25.06 (Inline / режим L3-роутер)"
+    mgmt_ip: "10.207.129.21"
+    datapath:
+      ext_ip: "10.0.60.5"
+      int_ip: "10.0.40.5"
+      
+  targets: 
+    nginx: "{{ nodes.victim.net.ip }}"                          # По умолчанию бьем в NGINX
+    trex_rx: "{{ nodes.trex_node.net.interfaces.port_1.addr }}" # Волюметрика
+    
+  sources:
+    botnet_pool: "{{ networks.external.subnets.trex_clients }}" # L3/L4 -- STL-боты
+
+# =========================================================
+# ШАБЛОНЫ (YAML Anchors)
+# =========================================================
+_templates:
+  # --- Маршруты атак ---
+  attack_route: &Attack_Route
+    dst_ip: "{{ nodes.trex_node.net.interfaces.port_1.addr }}"
+    src_pool: "{{ networks.external.subnets.trex_clients }}"
+
+  # --- Акторы ---
+  jmeter_baseline: &JMeter_Base
+    tool: jmeter
+    profile: baseline
+    threads: 50
+    override_tput: 400
+    delay: 0
+    jprops:
+      RAMPUP_SEC: 90
+
+  trex_attack: &TRex_Attack
+    tool: trex
+    delay: 15
+    overridemult: 10
+
+  jmeter_attack: &JMeter_Attack
+    tool: jmeter
+    delay: 15
+
+# ═══════════════════════════════════════════════════════════
+# 2. ПРОФИЛИ АТАКИ (ATOMIC PROFILES)
+# ═══════════════════════════════════════════════════════════
+profiles: 
+  # --- TRex (L3/L4 trex/stl_* & L7 trex/astf_*) ---
+  trex:
+    udp_flood_64b:
+      script: "stl_udp_flood.py"
+      tunables:
+        <<: *Attack_Route
+    udp_mix:
+      script: "stl_udp_mix.py"
+      tunables:
+        <<: *Attack_Route
+    syn_flood:
+      script: "stl_syn_flood.py"
+      tunables:
+        <<: *Attack_Route
+        dst_ip: "{{ nodes.victim.net.ip }}" # Оверрайд: SYN бьет во фронтенд
+    ack_flood:
+      script: "stl_ack_flood.py"
+      tunables:
+        <<: *Attack_Route
+    rst_flood:
+      script: "stl_rst_flood.py"
+      tunables:
+        <<: *Attack_Route
+    icmp_flood:
+      script: "stl_icmp_flood.py"
+      tunables:
+        <<: *Attack_Route
+    http_get_astf:
+      script: "astf_http_flood.py"
+      tunables:
+        <<: *Attack_Route
+
+  # --- JMeter (L7 jmeter/NN_*.jmx) ---
+  jmeter:
+    baseline:
+      jmx: "00_baseline.jmx"
+    http_get_flood:
+      jmx: "01_get_flood.jmx"
+    http_post_big:
+      jmx: "02_post_big.jmx"
+      extra_args: "-JUPLOAD_FILE={{ paths.base }}/payloads/payload_10M.bin"
+    http_random_uri:
+      jmx: "03_random_uri.jmx"
+    slowloris:
+      jmx: "04_slowloris.jmx"
+    login_brute:
+      jmx: "05_login_brute.jmx"
+
+# ═══════════════════════════════════════════════════════════
+# 3. СЦЕНАРИИ ТЕСТИРОВАНИЯ (TEST CASES)
+# ═══════════════════════════════════════════════════════════
+scenarios:
+  # =========================================================
+  # Baseline (Эталонные тесты и калибровка)
+  # =========================================================
+  group_1:
+    label: "Baseline & Health Checks"
+    B0:
+      type: "single"
+      label: "Single Baseline Run [B0_Baseline_Single] (5m, 400 RPS)"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+          threads: 10
+      presets:
+        low:
+          label: "Low (3m: 300 RPS)"
+          overrides:
+            duration: 180
+            actors: { baseline: { override_tput: 300 } }
+        medium:
+          label: "Medium (5m: 800 RPS)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 } }
+        high:
+          label: "High (10m: 1200 RPS)"
+          overrides:
+            duration: 600
+            actors: { baseline: { override_tput: 1200 } }
+
+    B1:
+      type: "series"
+      label: "Baseline Run x3 Transparent [B1_Base_Transp] (3-5m, 400-1200 RPS)"
+      prompt: "Switch DUT to TRANSPARENT mode!"
+      repeats: 3
+      interval: [180, 300]
+      template:
+        duration: [180, 300]
+        actors:
+          - <<: *JMeter_Base
+            threads: 10
+            override_tput: [400, 1200]
+      presets:
+        low:
+          label: "Low (3-5m: 300-800 RPS)"
+          overrides:
+            actors: { baseline: { override_tput: [300, 500] } }
+        medium:
+          label: "Medium (5-7m: 800-1200 RPS)"
+          overrides:
+            duration: [300, 420]
+            actors: { baseline: { override_tput: [800, 1200] } }
+        high:
+          label: "High (7-10m: 1200-2000 RPS)"
+          overrides:
+            duration: [420, 600]
+            actors: { baseline: { override_tput: [1200, 2000] } }
+
+    B2:
+      type: "series"
+      label: "Baseline Run x3 Mitigator [B2_Base_Mitig] (3-5m, 400-1200 RPS)"
+      prompt: "Enable DDoS PROTECTION for HTTP(S) baseline!"
+      repeats: 3
+      interval: [180, 300]
+      template:
+        duration: [180, 300]
+        actors:
+          - <<: *JMeter_Base
+            threads: 10
+            override_tput: [400, 1200]
+      presets:
+        low:
+          label: "Low (3-5m: 300-800 RPS)"
+          overrides:
+            actors: { baseline: { override_tput: [300, 500] } }
+        medium:
+          label: "Medium (5-7m: 800-1200 RPS)"
+          overrides:
+            duration: [300, 420]
+            actors: { baseline: { override_tput: [800, 1200] } }
+        high:
+          label: "High (7-10m: 1200-2000 RPS)"
+          overrides:
+            duration: [420, 600]
+            actors: { baseline: { override_tput: [1200, 2000] } }
+
+  # =========================================================
+  # ГРУППА 1: ИНФРАСТРУКТУРНЫЕ АТАКИ (L3/L4)
+  # ========================================================= 
+  group_2:
+    label: "Volumetric (Infrastructure) Attacks [L3/L4]"
+    U1:
+      label: "UDP Flood (Max PPS) [L4_UDP_PPS] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: udp_flood_64b
+      presets:
+        low:
+          label: "Low (3m: 2000 Mult)"
+          overrides:
+            duration: 180
+            actors: { udp_flood_64b: { overridemult: 2000 } }
+        medium:
+          label: "Medium (5m: 800 RPS Base, 5000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 }, udp_flood_64b: { overridemult: 5000 } }
+        high:
+          label: "High (10m: 1200 RPS Base, 1000 Mult)"
+          overrides:
+            duration: 600
+            actors: { baseline: { override_tput: 1200 }, udp_flood_64b: { overridemult: 10000 } }
+
+    U2:
+      label: "UDP Mix (Max Bandwidth) [L4_UDP_BW] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: udp_mix
+          overridemult: 5000
+      presets:
+        low:
+          label: "Low (3m: 2000 Mult)"
+          overrides:
+            duration: 180
+            actors: { udp_mix: { overridemult: 2000 } }
+        medium:
+          label: "Medium (5m: 800 RPS Base, 5000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 }, udp_mix: { overridemult: 5000 } }
+        high:
+          label: "High (8m: 1200 RPS Base, 10000 Mult)"
+          overrides:
+            duration: 480
+            actors: { baseline: { override_tput: 1200 }, udp_mix: { overridemult: 10000 } }
+
+    S1:
+      label: "SYN Flood (State Exhaustion) [L4_SYN_State] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: syn_flood
+          overridemult: 20
+      presets:
+        low:
+          label: "Low (3m: 2000 Mult)"
+          overrides:
+            duration: 180
+            actors: { syn_flood: { overridemult: 2000 } }
+        medium:
+          label: "Medium (5m: 800 RPS Base, 5000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 }, syn_flood: { overridemult: 5000 } }
+        high:
+          label: "High (5m: 1200 RPS Base, 10000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 1200 }, syn_flood: { overridemult: 10000 } }
+
+    S2:
+      label: "ACK Flood (Out-of-State / Session Lookup) [L4_ACK_Flood] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: ack_flood
+          overridemult: 20
+      presets:
+        low:
+          label: "Low (3m: 2000 Mult)"
+          overrides:
+            duration: 180
+            actors: { ack_flood: { overridemult: 2000 } }
+        medium:
+          label: "Medium (5m: 800 RPS Base, 5000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 }, ack_flood: { overridemult: 5000 } }
+        high:
+          label: "High (5m: 1200 RPS Base, 10000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 1200 }, ack_flood: { overridemult: 10000 } }
+
+    S3:
+      label: "RST Flood (Session Teardown) [L4_RST_Flood] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: rst_flood
+          overridemult: 20
+      presets:
+        low:
+          label: "Low (3m: 2000 Mult)"
+          overrides:
+            duration: 180
+            actors: { rst_flood: { overridemult: 2000 } }
+        medium:
+          label: "Medium (5m: 800 RPS Base, 5000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 }, rst_flood: { overridemult: 5000 } }
+        high:
+          label: "High (5m: 1200 RPS Base, 10000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 1200 }, rst_flood: { overridemult: 10000 } }
+
+    I1:
+      label: "ICMP Flood (Volumetric Flood) [L3_ICMP] + Baseline"
+      duration: 180
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: icmp_flood
+      presets:
+        low:
+          label: "Low (3m: 2000 Mult)"
+          overrides:
+            duration: 180
+            actors: { icmp_flood: { overridemult: 2000 } }
+        medium:
+          label: "Medium (5m: 800 RPS Base, 5000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 800 }, icmp_flood: { overridemult: 5000 } }
+        high:
+          label: "High (5m: 1200 RPS Base, 15000 Mult)"
+          overrides:
+            duration: 300
+            actors: { baseline: { override_tput: 1200 }, icmp_flood: { overridemult: 15000 } }
+
+  # =========================================================
+  # ГРУППА 2: ПРИКЛАДНЫЕ АТАКИ (L7)
+  # =========================================================
+  group_3:
+    label: "Application Attacks [L7]"
+    A1:
+      label: "TRex ASTF HTTP Flood (Stateful L7 Flood) [L7_ASTF_Flood] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *TRex_Attack
+          profile: http_get_astf
+          overridemult: 1000  # CPS
+      presets:
+        low:
+          label: "Low (3m: 300 RPS Base, 5000 CPS Attack)"
+          overrides:
+            duration: 180
+            actors:
+              baseline:       { override_tput: 300 }
+              http_get_astf:  { overridemult: 5000 }
+        medium:
+          label: "Medium (5m: 600 RPS Base, 20000 CPS Attack)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:       { override_tput: 600 }
+              http_get_astf:  { overridemult: 20000 }
+        high:
+          label: "High (10m: 900 RPS Base, 50000 CPS Attack)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:       { override_tput: 900 }
+              http_get_astf:  { overridemult: 50000 }
+
+    H1:
+      label: "HTTP GET Flood (Application Flood) [L7_Get_Flood] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *JMeter_Attack
+          profile: http_get_flood
+          threads: 100
+          override_tput: 7000
+      presets:
+        low:
+          label: "Low (3m: 300 RPS Base & 5000 RPS Attack)"
+          overrides:
+            duration: 180
+            actors:
+              baseline:       { override_tput: 300 }
+              http_get_flood: { override_tput: 5000 }
+        medium:
+          label: "Medium (5m: 600 RPS Base & 10000 RPS Attack)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:       { override_tput: 600 }
+              http_get_flood: { override_tput: 10000 }
+        high:
+          label: "High (10m: 900 RPS Base & 15000 RPS Attack)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:       { override_tput: 900 }
+              http_get_flood: { override_tput: 15000 }
+
+    H2:
+      label: "Cache Bypass (Random URI) [L7_Cache_Bypass] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *JMeter_Attack
+          profile: http_random_uri
+          threads: 50
+          override_tput: 5000
+      presets:
+        low:
+          label: "Low (3m: 300 RPS Base & 1000 RPS Attack)"
+          overrides:
+            duration: 180
+            actors:
+              baseline:         { override_tput: 300 }
+              http_random_uri:  { override_tput: 1000 }
+        medium:
+          label: "Medium (5m: 600 RPS Base & 3000 RPS Attack)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:         { override_tput: 600 }
+              http_random_uri:  { override_tput: 3000 }
+        high:
+          label: "High (10m: 900 RPS Base & 5000 RPS Attack)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:         { override_tput: 900 }
+              http_random_uri:  { override_tput: 5000 }
+
+    H3:
+      label: "Large POST Upload (Resource Exhaustion) [L7_Heavy_Upload] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *JMeter_Attack
+          profile: http_post_big
+          threads: 50
+          override_tput: 400
+      presets:
+        low:
+          label: "Low (3m: 300 RPS Base & 1MB / 300 RPS Attack)"
+          overrides:
+            duration: 180
+            actors:
+              baseline:      { override_tput: 300 }
+              http_post_big: { override_tput: 300, payload: /opt/pmi/payloads/payload_1M.bin }
+        medium:
+          label: "Medium (5m: 600 RPS Base & 10MB / 500 RPS Attack)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:      { override_tput: 600 }
+              http_post_big: { override_tput: 500, payload: /opt/pmi/payloads/payload_10M.bin }
+        high:
+          label: "High (10m: 900 RPS Base & 10MB / 750 RPS Attack)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:      { override_tput: 900 }
+              http_post_big: { override_tput: 750, payload: /opt/pmi/payloads/payload_10M.bin }
+
+    H4:
+      label: "Slowloris (Connections Limits) [L7_Slowloris] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *JMeter_Attack
+          profile: slowloris
+          threads: 2000
+          delay: 30
+          jprops:
+            SLEEP_MS: 15000
+      presets:
+        low:
+          label: "Low (5m: 400 RPS Base & 1000 Conn Attack)"
+          overrides:
+            duration: 300
+            actors:
+              slowloris: { threads: 1000, jprops: { SLEEP_MS: 15000 } }
+        medium:
+          label: "Medium (10m: 800 RPS Base & 2000 Conn Attack)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:  { override_tput: 800 }
+              slowloris: { threads: 2000, jprops: { SLEEP_MS: 15000 } }
+
+    H5:
+      label: "Login brute-like (Credential Stuffing) [L7_Login_Brute] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *JMeter_Attack
+          profile: login_brute
+          threads: 800
+          override_tput: 500
+          delay: 30
+          jprops:
+            LOGIN_MODE: invalid
+      presets:
+        low:
+          label: "Low (5m: 200 RPS Base & 500 RPS Attack)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:    { override_tput: 200 }
+              login_brute: { override_tput: 500 }
+        medium:
+          label: "Medium (10m: 500 RPS Base & 1000 RPS Attack)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:    { override_tput: 500 }
+              login_brute: { override_tput: 1000 }
+
+  # =========================================================
+  # ГРУППА 3: СМЕШАННЫЕ (QUALITY OF MITIGATION)
+  # =========================================================
+  group_4:
+    label: "Mixed Attacks [L3/L7]"
+    M1:
+      label: "Calibration (Benchmark) [M1_Calibration] : 3-5 min"
+      duration: 180
+      actors:
+        - <<: *JMeter_Base
+      presets:
+        low:
+          label: "Low (3m: 500 RPS)"
+          overrides: { actors: { baseline: { override_tput: 500 } } }
+        medium:
+          label: "Medium (3m: 1000 RPS)"
+          overrides: { actors: { baseline: { override_tput: 1000 } } }
+        high:
+          label: "High (3m: 2000 RPS)"
+          overrides: { actors: { baseline: { override_tput: 2000 } } }
+
+    M2:
+      label: "Simple Mitigation (Max PPS + Random URI) [M2_UDP_URI] + Baseline"
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+        - <<: *JMeter_Attack
+          profile: http_random_uri
+          threads: 50
+          override_tput: 5000
+          delay: 10      
+        - <<: *TRex_Attack
+          profile: udp_flood_64b
+          overridemult: 15
+      presets:
+        low:
+          label: "Low (5m: 500 RPS Base, 1000 RPS Attack, 1000 Mult UDP)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:       { override_tput: 500 }
+              http_random_uri:{ override_tput: 1000 }
+              udp_flood_64b:  { overridemult: 2000 }
+        medium:
+          label: "Medium (5m: 1000 RPS Base, 3000 RPS Attack, 1500 Mult UDP)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:       { override_tput: 1000 }
+              http_random_uri:{ override_tput: 3000 }
+              udp_flood_64b:  { overridemult: 5000 }
+        high:
+          label: "High (10m: 2000 RPS Base, 6000 RPS Attack, 2500 Mult UDP)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:       { override_tput: 2000 }
+              http_random_uri:{ override_tput: 6000 }
+              udp_flood_64b:  { overridemult: 10000 }
+
+    M3:
+      label: "Complex Mitigation (State Exhaustion + Application Flood) [M3_SYN_GET] + Baseline"
+      duration: 600
+      actors:
+        - <<: *JMeter_Base
+          override_tput: 1000
+        - <<: *JMeter_Attack
+          profile: http_get_flood
+          threads: 50
+          override_tput: 10000
+          delay: 10
+        - <<: *TRex_Attack
+          profile: syn_flood
+          overridemult: 15
+      presets:
+        low:
+          label: "Low (5m: 500 RPS Base, 1000 RPS Attack, 1000 Mult SYN)"
+          overrides:
+            duration: 300
+            actors:
+              baseline:       { override_tput: 500 }
+              http_get_flood: { override_tput: 1000 }
+              syn_flood:      { overridemult: 2000 }
+        medium:
+          label: "Medium (10m: 1000 RPS Base, 5000 RPS Attack, 1500 Mult SYN)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:       { override_tput: 1000 }
+              http_get_flood: { override_tput: 5000 }
+              syn_flood:      { overridemult: 5000 }
+        high:
+          label: "High (15m: 2000 RPS Base, 10000 RPS Attack, 2500 Mult SYN)"
+          overrides:
+            duration: 900
+            actors:
+              baseline:       { override_tput: 2000 }
+              http_get_flood: { override_tput: 10000 }
+              syn_flood:      { overridemult: 10000 }
+
+    M4:
+      label: "Full Stress (Random URI + Resource Exhaustion + Max Bandwidth) [M4_UDPM_POST_URI] + Baseline"
+      duration: 900
+      actors:
+        - <<: *JMeter_Base
+          override_tput: 1000
+        - <<: *JMeter_Attack
+          profile: http_random_uri
+          threads: 50
+          override_tput: 1000
+          delay: 5
+        - <<: *JMeter_Attack
+          profile: http_post_big
+          threads: 50
+          override_tput: 600
+        - <<: *TRex_Attack
+          profile: udp_mix
+          overridemult: 15
+          delay: 20
+      presets:
+        low:
+          label: "Low (10m: 500 RPS Base, 3500 RPS Attack, 1000 Mult UDP Mix)"
+          overrides:
+            duration: 600
+            actors:
+              baseline:         { override_tput: 500 }
+              http_random_uri:  { override_tput: 3000 }
+              http_post_big:    { override_tput: 500 }
+              udp_mix:          { overridemult: 2000 }
+        medium:
+          label: "Medium (15m: 1000 RPS Base, 6750 RPS Attack, 1500 Mult UDP Mix)"
+          overrides:
+            duration: 900
+            actors:
+              baseline:         { override_tput: 1000 }
+              http_random_uri:  { override_tput: 6000 }
+              http_post_big:    { override_tput: 750 }
+              udp_mix:          { overridemult: 5000 }
+        high:
+          label: "High (15m: 2000 RPS Base, 11000 RPS Attack, 2500 Mult UDP Mix)"
+          overrides:
+            duration: 900
+            actors:
+              baseline:         { override_tput: 2000 }
+              http_random_uri:  { override_tput: 10000 }
+              http_post_big:    { override_tput: 1000 }
+              udp_mix:          { overridemult: 10000 }

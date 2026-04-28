@@ -1,0 +1,1 @@
+--8<-- "lib/README.md"

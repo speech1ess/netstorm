@@ -1,0 +1,1929 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": 16,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "server",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "host",
+        "PMI"
+      ],
+      "targetBlank": false,
+      "title": " PMI: Host Monitoring",
+      "type": "dashboards",
+      "url": ""
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "PMI",
+        "nginx",
+        "victim"
+      ],
+      "targetBlank": false,
+      "title": "PMI: Victim Dashboard (Nginx)",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    },
+    {
+      "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "L4_tests",
+        "PMI",
+        "TRex",
+        "generator"
+      ],
+      "targetBlank": false,
+      "title": "PMI: L3 Load (TRex STL)",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "L7_tests",
+        "PMI",
+        "JMeter",
+        "generator"
+      ],
+      "targetBlank": false,
+      "title": "PMI: L7 Load (JMeter)",
+      "type": "dashboards",
+      "url": ""
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "JMeter Test Results Archive (NGINX)",
+      "tooltip": "",
+      "type": "link",
+      "url": "http://10.207.129.23:8080/"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "VictoriaMetrics UI",
+      "tooltip": "",
+      "type": "link",
+      "url": "http://10.207.129.23:8428/vmui/"
+    }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "description": "RAM usage by processes",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 117,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "sum by (groupname, instance) (namedprocess_namegroup_memory_bytes{groupname=~\"nginx|trex|jmeter|python3\", memtype=\"resident\"})",
+          "format": "time_series",
+          "legendFormat": "{{groupname}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "description": "CPU usage by processes",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 115,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "(sum by (groupname, instance) (rate(namedprocess_namegroup_cpu_seconds_total{groupname=~\"nginx|trex|jmeter|python3\"}[1m])) * 100) / 48",
+          "format": "time_series",
+          "hide": false,
+          "legendFormat": "{{groupname}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "CPU",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "id": 107,
+      "panels": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 3,
+            "x": 0,
+            "y": 5
+          },
+          "id": 112,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"chrony.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "chrony.service",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 3,
+            "y": 5
+          },
+          "id": 113,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"node_exporter.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "node_exporter.service",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 3,
+            "x": 7,
+            "y": 5
+          },
+          "id": 109,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"nginx.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "nginx.service",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 3,
+            "x": 10,
+            "y": 5
+          },
+          "id": 110,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"nginx-expose.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "nginx-expose.service",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 13,
+            "y": 5
+          },
+          "id": 111,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"nginx-prometheus-exporter.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "nginx-exporter.service",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 17,
+            "y": 5
+          },
+          "id": 108,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"victoriametrics.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "victoriametrics.service",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "index": 1,
+                      "text": "○ DOWN"
+                    },
+                    "1": {
+                      "index": 0,
+                      "text": "● UP"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "thresholds": {
+                "mode": "percentage",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 3,
+            "x": 21,
+            "y": 5
+          },
+          "id": 105,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.2",
+          "targets": [
+            {
+              "0": "n",
+              "1": "o",
+              "2": "d",
+              "3": "e",
+              "4": "_",
+              "5": "s",
+              "6": "y",
+              "7": "s",
+              "8": "t",
+              "9": "e",
+              "10": "m",
+              "11": "d",
+              "12": "_",
+              "13": "u",
+              "14": "n",
+              "15": "i",
+              "16": "t",
+              "17": "_",
+              "18": "s",
+              "19": "t",
+              "20": "a",
+              "21": "t",
+              "22": "e",
+              "23": "{",
+              "24": "n",
+              "25": "a",
+              "26": "m",
+              "27": "e",
+              "28": "=",
+              "29": "\"",
+              "30": "n",
+              "31": "g",
+              "32": "i",
+              "33": "n",
+              "34": "x",
+              "35": ".",
+              "36": "s",
+              "37": "e",
+              "38": "r",
+              "39": "v",
+              "40": "i",
+              "41": "c",
+              "42": "e",
+              "43": "\"",
+              "44": "}",
+              "datasource": {
+                "type": "victoriametrics-metrics-datasource",
+                "uid": "P4169E866C3094E38"
+              },
+              "editorMode": "code",
+              "expr": "node_systemd_unit_state{instance=\"localhost:9100\", name=\"nginx.service\", state=\"active\"}",
+              "format": "time_series",
+              "range": true,
+              "refId": "A",
+              "trace": 1
+            }
+          ],
+          "title": "trex-2.service",
+          "type": "stat"
+        }
+      ],
+      "title": "🚦 SYSTEMD STATUS",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 100,
+      "panels": [],
+      "title": "🚨 REAL-TIME STATUS (KPI)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "rate(nginx_http_requests_total[1m])",
+          "format": "time_series",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "L7 Victim Processed (NGINX)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "sum(jmeter_count{transaction=\"all\", statut=\"all\"}) / 5",
+          "format": "time_series",
+          "legendFormat": "Attack Rate",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "L7 Attack Rate (JMeter)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "purple",
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "sum(pmi_trex_tx_pps)",
+          "format": "time_series",
+          "legendFormat": "PPS",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "L4 Packet Storm (TRex)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 10
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\", instance=~\"$target_node\"}[1m])) * 100)",
+          "format": "time_series",
+          "legendFormat": "CPU",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Target CPU Load (Node)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 10
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "(sum(jmeter_countError) / sum(jmeter_count)) * 100",
+          "format": "time_series",
+          "legendFormat": "Error Rate",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "L7 Client Error Rate (JMeter)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 40
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "Gbit/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 10
+      },
+      "id": 103,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.3.2",
+      "targets": [
+        {
+          "0": "p",
+          "1": "m",
+          "2": "i",
+          "3": "_",
+          "4": "t",
+          "5": "r",
+          "6": "e",
+          "7": "x",
+          "8": "_",
+          "9": "t",
+          "10": "x",
+          "11": "_",
+          "12": "b",
+          "13": "p",
+          "14": "s",
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "sum(pmi_trex_tx_bps) / 1e9",
+          "format": "time_series",
+          "range": true,
+          "refId": "A",
+          "trace": 1
+        }
+      ],
+      "title": "L4 TX Bandwidth (TRex)",
+      "type": "stat"
+    },
+    {
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 101,
+      "title": "🔥 ATTACK IMPACT ANALYSIS",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Requests / Sec",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "sum(jmeter_count{transaction=\"all\", statut=\"all\"}) / 5",
+          "format": "time_series",
+          "legendFormat": "Attack Sent (JMeter)",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "victoriametrics-metrics-datasource",
+            "uid": "P4169E866C3094E38"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(nginx_http_requests_total[1m]))",
+          "format": "time_series",
+          "legendFormat": "Target Processed (NGINX)",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "L7 Correlation: Sent vs Handled",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "victoriametrics-metrics-datasource",
+        "uid": "P4169E866C3094E38"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Target CPU %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TRex PPS"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "pps"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(pmi_trex_tx_pps)",
+          "legendFormat": "TRex PPS",
+          "refId": "A"
+        },
+        {
+          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\", instance=~\"$target_node\"}[1m])) * 100)",
+          "legendFormat": "Target CPU %",
+          "refId": "B"
+        }
+      ],
+      "title": "L4 Correlation: Packet Storm vs System Load",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 37,
+  "style": "dark",
+  "tags": [
+    "PMI",
+    "Overview",
+    "Mission Control"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "victoriametrics-metrics-datasource",
+          "uid": "P4169E866C3094E38"
+        },
+        "definition": "label_values(node_cpu_seconds_total, instance)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Target Node",
+        "multi": false,
+        "name": "target_node",
+        "options": [],
+        "query": "label_values(node_cpu_seconds_total, instance)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "PMI: Control Panel",
+  "uid": "pmi-mission-control",
+  "version": 33,
+  "weekStart": ""
+}

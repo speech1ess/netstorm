@@ -1,0 +1,511 @@
+# ═══════════════════════════════════════════════════════════
+# ПРОГРАММА И МЕТОДИКА ИСПЫТАНИЙ (ПМИ)
+# DUT: Next-Generation Firewall (NGFW)
+# MODE: L3 Routed / Stateful Inspection
+# ═══════════════════════════════════════════════════════════
+
+program:
+  description: "НТ NGFW: Матрица деградации, емкость, устойчивость."
+  dut:
+    label: "Generic NGFW Appliance (L3 Inline Mode)"
+    mgmt_ip: "10.207.129.21"
+    datapath:
+      ext_ip: "10.0.60.5"
+      int_ip: "10.0.40.5"
+    thresholds:        # потери пакетов
+      warn: 1000
+      fatal: 5000
+  
+# =========================================================
+# ШАБЛОНЫ
+# =========================================================
+_templates:
+  # --- Маршруты для ASTF (Stateful) ---
+  astf_route: &ASTF_Route
+    client_pool: "{{ networks.external.subnets.trex_clients }}"  # Port 0 (Outside)
+    server_pool: "{{ networks.server_farm.subnets.trex_servers }}" # Port 1 (Inside/DMZ)
+    payload_dir: "{{ paths.payloads }}/iep"                       # Папка с pcap файлами
+
+  # 🟢 Сумма CPS = 1000.0. Соотношение: 0.6% UDP / 99.4% TCP (Inbound Web Perimeter)
+  mix_perimeter: &Mix_Perimeter
+    # --- UDP Трафик (Итого: 6 CPS / 0.6%) ---
+    # Минимум: легитимные DNS-запросы и капля NTP
+    - { file: "dns_0.pcap", cps: 4.00, port: 53 }                 # Резолв
+    - { file: "ntp.pcap", cps: 2.00, port: 123 }                  # Время
+    # --- TCP Трафик (Итого: 994 CPS / 99.4%) ---
+    # Имитируем массированные подключения "Снаружи -> Внутрь" к опубликованным сервисам
+    - { file: "1a 2 20 tcp.stream eq 539.pcap", cps: 400.00, port: 443 }  # Основной HTTPS трафик к веб-серверам
+    - { file: "4a 22 459 tcp.stream eq 804.pcap", cps: 250.00, port: 8443 } # API запросы / Толстые клиенты
+    - { file: "1a 2 20 tcp.stream eq 539.pcap", cps: 150.00, port: 444 }  # Доп. веб-сервисы
+    - { file: "5a 56 84 tcp.stream eq 952.pcap", cps: 100.00, port: 445 } 
+    - { file: "3a 40 64 tcp.stream eq 1329.pcap", cps: 54.00, port: 80 }  # Немного чистого HTTP (редиректы)
+    - { file: "0a 3 5.pcap", cps: 30.00 }                                 # Короткие чеки / Keep-Alive
+    - { file: "elephant.pcap", cps: 10.00, port: 443 }                    # Скачивание тяжелых отчетов/файлов с ваших серверов
+
+  # 🟢 Сумма CPS = 1000.0. Соотношение: 20% UDP / 80% TCP (Datacenter West-East)
+  mix_datacenter: &Mix_Datacenter
+    # --- UDP Трафик (Итого: 200 CPS / 20%) ---
+    - { file: "syslog_udp_for_trex.pcap", cps: 120.00 }           # Агрессивный логгинг
+    - { file: "dns_0.pcap", cps: 50.00, port: 53 }                # Внутренний DNS (Service Discovery)
+    - { file: "snmp2c.pcap", cps: 10.00, port: 161 }              # Мониторинг (Zabbix/Prometheus)
+    - { file: "ntp.pcap", cps: 10.00, port: 123 }                 # Синхронизация времени
+    - { file: "dhcp_dora_unicast.pcap", cps: 10.00, port: 67 }    # Provisioning новых ВМ и серверов
+    # --- TCP Трафик (Итого: 800 CPS / 80%) ---
+    # Тяжелое межсерверное взаимодействие
+    - { file: "1a 2 20 tcp.stream eq 539.pcap", cps: 350.00, port: 8080 } # Микросервисы (REST/gRPC)
+    - { file: "4a 22 459 tcp.stream eq 804.pcap", cps: 200.00, port: 5432 } # Базы Данных (PostgreSQL)
+    - { file: "1a 2 20 tcp.stream eq 539.pcap", cps: 100.00, port: 9092 } # Очереди (Kafka/RabbitMQ)
+    - { file: "5a 56 84 tcp.stream eq 952.pcap", cps: 80.00, port: 6379 } # Кеширование (Redis)
+    - { file: "3a 40 64 tcp.stream eq 1329.pcap", cps: 40.00, port: 22 }  # SSH / Управление конфигурациями
+    - { file: "elephant.pcap", cps: 30.00, port: 445 }                    # Тяжелые бэкапы, SMB, миграция ВМ
+
+  # --- Базовые Акторы ---
+  trex_astf_base: &TRex_ASTF
+    tool: trex
+    delay: 5
+
+  jmeter_base: &JMeter_Base
+    tool: jmeter
+    delay: 0
+    jprops:
+      TARGET_HOST: "{{ nodes.victim.net.ip }}"
+
+# ═══════════════════════════════════════════════════════════
+# 1. ПРОФИЛИ ТРАФИКА (STATEFUL PROFILES)
+# ═══════════════════════════════════════════════════════════
+profiles: 
+  # --- TRex (ASTF Mode - L4-L7 Stateful) ---
+  trex:
+    astf_emix_dc:
+      script: "astf_pcap_emixer.py" 
+      tunables: 
+        <<: *ASTF_Route
+        rampup_sec: 120
+        pcap_list: *Mix_Datacenter
+
+    astf_emix_perim:
+      script: "astf_pcap_emixer.py"  
+      tunables: 
+        <<: *ASTF_Route
+        rampup_sec: 120
+        pcap_list: *Mix_Perimeter
+
+    astf_udp_cps:
+      script: "astf_hammer_udp_cps.py"  
+      tunables: 
+        <<: *ASTF_Route
+
+    astf_tcp_cps:
+      script: "astf_mice_tcp_cps.py"    
+      tunables: 
+        <<: *ASTF_Route
+
+    astf_http_cps:
+      script: "astf_http_cps.py"        
+      tunables: 
+        <<: *ASTF_Route
+
+    astf_max_cc:
+      script: "astf_holder_max_cc.py"   
+      tunables: 
+        <<: *ASTF_Route
+
+  # --- JMeter (L7 SSL/WAF Inspection) ---
+  jmeter:
+    https_ssl_stress:
+      jmx: "10_ngfw_https_stress.jmx"
+      threads: 200
+      override_tput: 500
+
+    https_exploit_mix:
+      jmx: "11_ngfw_waf_exploits.jmx"
+      threads: 50
+      override_tput: 100
+
+# ═══════════════════════════════════════════════════════════
+# 2. СЦЕНАРИИ ТЕСТИРОВАНИЯ (TEST CASES)
+# ═══════════════════════════════════════════════════════════
+scenarios:
+
+# =========================================================
+  # ГРУППА 1: PERFORMANCE DEGRADATION (МАТРИЦА ДЕГРАДАЦИИ)
+  # RUN MODE: Interactive Series (Stepper)
+  # PCAP:  {{ paths.payloads }}/iep
+  # =========================================================
+  group_1:
+    label: "Perfomance Degradation Test"
+    
+    PD1_NS:
+      type: "series"
+      label: "North-South Degradation Matrix [PD1_NS] (Perimeter Mix 1000 CPS)"
+      prompt: "СЕРИЯ (4 шага). Включайте функции NGFW накопительно в паузах между тестами:\n1) Permit ANY\n2) 5000+ Rules Drop\n3) App-ID + IPS\n4) Full SSL Decrypt"
+      repeats: 4
+      interactive: true
+      template:
+        duration: 30
+        actors:
+          - <<: *TRex_ASTF
+            profile: astf_emix_perim
+      presets:
+        low:
+          label: "Low Load (Mult 5 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 5 }
+        medium:
+          label: "Medium Load (Mult 10 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 10 }
+        high:
+          label: "High Load (Mult 15 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 15 }
+
+    PD2_WE:
+      type: "series"
+      label: "West-East Degradation Matrix [PD2_WE] (DataCenter Mix 1000 CPS)"
+      prompt: "СЕРИЯ (4 шага). Включайте функции NGFW накопительно в паузах между тестами:\n1) Permit ANY\n2) 5000+ Rules Drop\n3) App-ID + IPS\n4) Full SSL Decrypt"
+      repeats: 4
+      interactive: true
+      template:
+        duration: 300
+        actors:
+          - <<: *TRex_ASTF
+            profile: astf_emix_dc
+      presets:
+        low:
+          label: "Low Load (Mult 5 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 5 }
+        medium:
+          label: "Medium Load (Mult 10 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 10 }
+        high:
+          label: "High Load (Mult 15 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 15 }
+
+  # =========================================================
+  # ГРУППА 2: AUTOMATED CAPACITY (АВТОМАТИЧЕСКИЙ ПОИСК ПОТОЛКА)
+  # RUN MODE: Series (Smart Stepper)
+  # =========================================================
+  group_2:
+    label: "Capacity Limit Test"
+    C1_UDP_STEP:
+      type: "series"
+      label: "UDP CPS Capacity Smart-Stepper Search [C1_UDP_STEP] (5k -> 25k CPS)"
+      prompt: "NGFW: L4 Mode. Ищем аппаратный потолок создания сессий (UDP)."
+      repeats: 5          
+      interval: 30        
+      template:
+        duration: 60
+        actors:
+          - <<: *TRex_ASTF
+            profile: astf_udp_cps
+            overridemult: { start: 5, step: 5 }
+      presets:
+        low:
+          label: "🐢 Low (Start: 5k, Step: 1k)"
+          overrides:
+            actors:
+              astf_udp_cps: { overridemult: { start: 5, step: 1 } }
+        medium:
+          label: "🚶 Medium (Start: 10k, Step: 10k)"
+          overrides:
+            actors:
+              astf_udp_cps: { overridemult: { start: 10, step: 10 } }
+        high:
+          label: "🏃 High (Start: 50k, Step: 25k)"
+          overrides:
+            actors:
+              astf_udp_cps: { overridemult: { start: 50, step: 25 } }
+
+    C2_TCP_STEP:
+      type: "series"
+      label: "TCP CPS Capacity Smart-Stepper Search [C2_TCP_STEP] (5k -> 25k CPS)"
+      prompt: "NGFW: L4 Mode. Ищем предел сетевого стека при TCP-рукопожатиях."
+      repeats: 5          
+      interval: 30        
+      template:
+        duration: 60
+        actors:
+          - <<: *TRex_ASTF
+            profile: astf_tcp_cps
+            overridemult: { start: 5, step: 5 }
+      presets:
+        low:
+          label: "🐢 Low (Start: 5k, Step: 1k)"
+          overrides:
+            actors:
+              astf_tcp_cps: { overridemult: { start: 5, step: 1 } }
+        medium:
+          label: "🚶 Medium (Start: 10k, Step: 10k)"
+          overrides:
+            actors:
+              astf_tcp_cps: { overridemult: { start: 10, step: 10 } }
+        high:
+          label: "🏃 High (Start: 50k, Step: 25k)"
+          overrides:
+            actors:
+              astf_tcp_cps: { overridemult: { start: 50, step: 25 } }
+
+    C3_HTTP_STEP:
+      type: "series"
+      label: "HTTP CPS Capacity Smart-Stepper Search [C3_HTTP_STEP] (5k -> 25k CPS)"
+      prompt: "NGFW: App-ID Mode. Ищем предел парсинга HTTP заголовков."
+      repeats: 5          
+      interval: 30        
+      template:
+        duration: 60
+        actors:
+          - <<: *TRex_ASTF
+            profile: astf_http_cps
+            overridemult: { start: 5, step: 5 }
+      presets:
+        low:
+          label: "🐢 Low (Start: 5k, Step: 1k)"
+          overrides:
+            actors:
+              astf_http_cps: { overridemult: { start: 5, step: 1 } }
+        medium:
+          label: "🚶 Medium (Start: 10k, Step: 10k)"
+          overrides:
+            actors:
+              astf_http_cps: { overridemult: { start: 10, step: 10 } }
+        high:
+          label: "🏃 High (Start: 50k, Step: 25k)"
+          overrides:
+            actors:
+              astf_http_cps: { overridemult: { start: 50, step: 25 } }
+
+    # 🟢 БИНАРНЫЙ ПОИСК СКОРОСТИ СЕССИЙ (CPS)
+    C4_TCP_BIN:
+      type: "series"
+      label: "TCP CPS Limit Binary Search [C4_TCP_BIN] (10k-200k CPS)"
+      prompt: "NGFW: L4 Mode. Автоматический поиск потолка TCP CPS."
+      health_check: true
+      duration: 60       
+      interval: 30       
+      series:
+        type: "binary_search"
+        min: 10          
+        max: 200         
+        precision: 5     
+      actors:
+        - tool: "trex"
+          profile: "astf_tcp_cps"  # Короткие мышиные потоки
+      presets:
+        limit_100k:
+          label: "🏢 Enterprise (Max 100k CPS)"
+          overrides: { series: { type: "binary_search", min: 1, max: 100, precision: 2 } }
+        limit_500k:
+          label: "☁️ DataCenter (Max 500k CPS)"
+          overrides: { series: { type: "binary_search", min: 10, max: 500, precision: 10 } }
+        limit_mellanox:
+          label: "🚀 Mellanox Mode (Max 2M CPS)"
+          overrides: { series: { type: "binary_search", min: 100, max: 2000, precision: 50 } }
+
+    # --- Подгруппа: CC (Concurrent Connections) ---
+    C5_MAX_CC:
+      label: "Max Concurrent Connections Limit Search [C5_MAX_CC] (State Table Exhaustion)"
+      prompt: "Ищем предел оперативной памяти (RAM) и таблицы трансляций NGFW."
+      duration: 600 # Дефолт - 10 минут
+      health_check: true # Если память кончится, полетят дропы!
+      actors:
+        - <<: *TRex_ASTF
+          profile: astf_max_cc  # 🟢 (долгоживущие сессии)
+          overridemult: 10 # 10k CPS (наполнение)
+      presets:
+        target_1m: 
+          label: "🎯 Target: 1M Sessions (2 мин)"
+          overrides: { duration: 120 } 
+        target_5m: 
+          label: "🎯 Target: 5M Sessions (10 мин)"
+          overrides: { duration: 600 } 
+        target_10m: 
+          label: "🎯 Target: 10M Sessions (20 мин)"
+          overrides: { duration: 1200 }
+
+  # =========================================================
+  # ГРУППА 3: RESILIENCY & STRESS (ОТКАЗОУСТОЙЧИВОСТЬ И СТРЕСС-ТЕСТЫ)
+  # RUN MODE: Single / Presets
+  # =========================================================
+  group_3:
+    label: "Infrastructure Resiliency & Burst Stress Test"
+    
+    RS1_HA:
+      label: "Active-Passive Stateful Sync [RS1_HA] (10k CPS)"
+      prompt: "ВНИМАНИЕ! На 60-й секунде теста АППАРАТНО ВЫКЛЮЧИТЬ ПИТАНИЕ/ИНТЕРФЕЙС активной ноды. Проверяем бесшовность сессий."
+      duration: 180
+      actors:
+        - <<: *TRex_ASTF
+          profile: astf_emix_perim 
+          overridemult: 10 # Оптимальный стабильный фон для проверки дропов
+      presets:
+        low:
+          label: "Low Load (1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 1 }
+        medium:
+          label: "Medium Load (Mult 8 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 8 }
+        high:
+          label: "High Load (Mult 15 x 1000 cps)"
+          overrides:
+            actors:
+              astf_emix_perim: { overridemult: 15 }
+
+    RS2_SB:
+      label: "Microburst Buffer Exhaustion Test [RS2_SB]"
+      prompt: "NGFW: Тест аппаратных буферов. Подача импульсного трафика (всплески по 10x от номинала)."
+      duration: 60
+      actors:
+        - tool: "trex"
+          profile: "stl_udp_microburst" 
+          overridemult: 1 
+      presets:
+        light:
+          label: "🌊 10G Bursts (Moderate)"
+          overrides: { actors: { stl_udp_microburst: { tunables: { burst_size: 1000, gap_usec: 5000 } } } }
+        severe:
+          label: "⚡ 40G Extreme Bursts (Severe)"
+          overrides: { actors: { stl_udp_microburst: { tunables: { burst_size: 5000, gap_usec: 1000 } } } }
+          
+    RS3_BB:
+      label: "Macro-Burst Load [RS3_BB] (Step Waves)"
+      prompt: "NGFW: Тест планировщика задач. Нагрузка подается волнами (30с - 100%, 30с - 10%)."
+      duration: 300
+      actors:
+        - <<: *TRex_ASTF
+          profile: astf_emix_perim
+      presets:
+        pulse_10x:
+          label: "🌊 10x Amplitude Wave (2k -> 20k CPS)"
+          overrides: { actors: { astf_emix_perim: { overridemult: { start: 2, step: 18 } } }, repeats: 5, interval: 30 }
+        pulse_50x:
+          label: "🌊 50x Amplitude Tsunami (1k -> 50k CPS)"
+          overrides: { actors: { astf_emix_perim: { overridemult: { start: 1, step: 49 } } }, repeats: 5, interval: 30 }
+
+    RS4_DOS:
+      label: "Pulsing L4 DoS Attack Simulation [RS4_DOS]"
+      prompt: "NGFW: Проверка защиты от DoS. Короткие агрессивные всплески UDP трафика."
+      duration: 120
+      actors:
+        - tool: "trex"
+          profile: "stl_udp_pulse_attack" 
+      presets:
+        flood_syn:
+          label: "💣 1M pps SYN Flood (Small Packets)"
+          overrides: { actors: { stl_udp_pulse_attack: { overridemult: 10, tunables: { pkt_size: 64 } } } }
+        flood_amp:
+          label: "💣 10G Amplification Flood (Large Packets)"
+          overrides: { actors: { stl_udp_pulse_attack: { overridemult: 5, tunables: { pkt_size: 1400 } } } }
+
+  # =========================================================
+  # ГРУППА 4: ADVANCED SECURITY (ГЛУБОКАЯ ИНСПЕКЦИЯ L7)
+  # RUN MODE: Concurrent Actors
+  # =========================================================
+  group_4:
+    label: "L7 Security Test"
+    
+    L7_WAF:
+      label: "HTTPS SSL/WAF Inspection Validation [L7_WAF]"
+      prompt: "NGFW: Включите WAF/IPS. Тест устойчивости к атакам на фоне легитимного SSL."
+      duration: 300
+      actors:
+        - <<: *JMeter_Base
+          profile: https_ssl_stress
+        - <<: *JMeter_Base
+          profile: https_exploit_mix
+          delay: 30 
+      presets:
+        baseline:
+          label: "🛡️ Standard SSL + Low Exploits"
+          overrides: 
+            actors: 
+              https_ssl_stress: { overridemult: 50 }
+              https_exploit_mix: { overridemult: 10 }
+        heavy_attack:
+          label: "⚔️ Standard SSL + High Exploits"
+          overrides: 
+            actors: 
+              https_ssl_stress: { overridemult: 50 }
+              https_exploit_mix: { overridemult: 100 }
+
+    L7_DOS:
+      label: "HTTP/S Application Flood [L7_DOS] (Slowloris/GET Flood)"
+      prompt: "NGFW: Включите профили защиты от L7 DoS (Rate Limiting). Проверка защиты CPU от перегрузки."
+      duration: 120
+      actors:
+        - <<: *JMeter_Base
+          profile: https_app_dos_flood 
+      presets:
+        get_flood:
+          label: "🌪️ Massive GET Flood (1000 Threads)"
+          overrides: { actors: { https_app_dos_flood: { overridemult: 1000 } } }
+        slowloris:
+          label: "🐢 Slowloris Simulation (Long timeouts)"
+          overrides: { actors: { https_app_dos_flood: { overridemult: 500 } } } # В реальном jmx нужно будет настроить keep-alive
+
+  # =========================================================
+  # ГРУППА 5: STABILITY & SOAK TESTS (УСТОЙЧИВОСТЬ)
+  # =========================================================
+  group_5:
+    label: "Stability & Soak Test"
+    
+    ST1_NS:
+      label: "North-South Stability [ST1_NS] (8-24H)"
+      prompt: "[NGFW SETUP] Включите все рабочие профили безопасности. Трафик Север-Юг (Perimeter Mix)."
+      duration: 43200  # Дефолт 12 часов
+      actors:
+        - <<: *TRex_ASTF
+          profile: astf_emix_perim
+      presets:
+        low: 
+          label: "Low Load (8 Hours @ 50%)"
+          overrides: 
+            duration: 28800
+            actors: { astf_emix_perim: { overridemult: 2.5 } }
+        medium: 
+          label: "Medium Load (12 Hours @ 70%)"
+          overrides: 
+            duration: 43200
+            actors: { astf_emix_perim: { overridemult: 3.5 } }
+        high: 
+          label: "High Load (24 Hours @ 90%)"
+          overrides: 
+            duration: 86400
+            actors: { astf_emix_perim: { overridemult: 4.5 } }
+
+    ST2:
+      label: "East-West Stability [ST2_DataCenter] (8-24H)"
+      prompt: "[NGFW SETUP] Включите App-ID / Микросегментацию. Трафик Запад-Восток (DataCenter Mix)."
+      duration: 43200  # Дефолт 12 часов
+      actors:
+        - <<: *TRex_ASTF
+          profile: astf_emix_dc
+      presets:
+        low: 
+          label: "Low Load (8 Hours @ 50%)"
+          overrides: 
+            duration: 28800
+            actors: { astf_emix_dc: { overridemult: 2.5 } }
+        medium: 
+          label: "Medium Load (12 Hours @ 70%)"
+          overrides: 
+            duration: 43200
+            actors: { astf_emix_dc: { overridemult: 3.5 } }
+        high: 
+          label: "High Load (24 Hours @ 90%)"
+          overrides: 
+            duration: 86400
+            actors: { astf_emix_dc: { overridemult: 4.5 } }

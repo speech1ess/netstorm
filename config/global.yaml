@@ -1,0 +1,209 @@
+environment: "production"
+debug: true
+
+# ==============================================================================
+# 1. СЕТЕВАЯ ТОПОЛОГИЯ
+# ==============================================================================
+networks:
+  # --- Внешний контур ---
+  external:
+    label: "External Network (Internet Zone)"
+    vlan: 500
+    subnets:
+      cidr: "10.0.50.0/29"
+      trex_clients: "15.0.0.0/16"                      # TRex Port 0 эмулирует этот пул
+      jmeter_base: "172.17.0.0/16"                     # /opt/pmi/profiles/jmeter/source_ips.csv
+      jmeter_attack: "10.17.0.0/16"                    # /opt/pmi/profiles/jmeter/attack_ips.csv
+    gateway: 
+      addr: "10.0.50.2"
+      label: "SW-EXT-01 [HGE1/0/1, HGE1/0/2]"
+  # --- DMZ (Зона установки СрЗИ / DUT) ---
+  dmz:
+    label: "DMZ Network (Security Perimeter)"
+    vlan: 600
+    # Транзитная подсеть в DMZ. DUT описывается в методике (test_program*.yaml).
+    subnets: 
+      cidr: "10.0.60.0/29"
+    gateway: 
+      addr: "10.0.60.2"
+      label: "SW-EXT-01 [HGE1/0/3, HGE1/0/4]"
+  # --- Внутренний контур (Защищаемый сегмент) ---
+  internal:
+    label: "Internal Protected Network"
+    vlan: 400
+    subnets: 
+      cidr: "10.0.40.0/29" # Пул NGINX и других сервисов
+    gateway: 
+      addr: "10.0.40.2"
+      label: "SW-INT-01 [HGE1/0/49, HGE1/0/50, HGE1/0/51]"
+  # --- Серверная ферма (Дополнительные генераторы/сервисы) ---
+  server_farm:
+    label: "Server Farm"
+    vlan: 447
+    subnets:
+      cidr: "10.0.70.0/29"
+      trex_servers: "47.0.0.0/24"                      # TRex Port 1 эмулирует эти бэкенды
+    gateway: 
+      addr: "10.0.70.1"
+      label: "SW-INT-01 [HGE1/0/52]"
+
+# ==============================================================================
+# 2. УЧАСТНИКИ СТЕНДА (NODES)
+# ==============================================================================
+nodes:
+  # --- CONTROL PLANE (Оркестратор) ---
+  orchestrator:
+    label: "NETSTORM Web UI & API"
+    net: { ip: "127.0.0.1", netns: null }
+    services:
+      api: { port: 8000, protocol: "http", path: "/docs" }
+    proc:
+      web: { bin: "/usr/local/bin/uvicorn", service_name: "pmi-web" }
+
+  # --- Target (NGINX) ---
+  victim:
+    label: "NGINX Target"
+    # 🟢 Ссылаемся на сеть, чтобы не дублировать логику
+    network_ref: "internal" 
+    net:
+      ip: "10.0.40.1"
+      cidr: "10.0.40.0/29" # Можно оставить для bash скриптов, если им нужен префикс
+      gw: "10.0.40.2"
+      netns: "webserver"
+      iface: "ens29f0np0"
+    services:
+      http: { port: 80, protocol: "http", path: "/" }
+      http_upload: { port: 80, protocol: "http", path: "/upload" }
+      http_login: { port: 80, protocol: "http", path: "/login" }
+      https: { port: 443, protocol: "https", path: "/" }
+      https_upload: { port: 443, protocol: "https", path: "/upload" }
+      https_login: { port: 443, protocol: "https", path: "/login" }
+      http_stub: { port: 80, protocol: "http", path: "/stub_status" }
+      http_reports: { port: 8080, protocol: "http", path: "/" }
+    proc:
+      nginx: { bin: "/usr/sbin/nginx", service_name: "nginx" }
+      exporter: { bin: "/usr/local/bin/nginx-prometheus-exporter", service_name: "nginx-prometheus-exporter" }
+      exposer: { bin: "/usr/local/bin/nginx-expose", service_name: "nginx-expose" }
+
+  # --- ГЕНЕРАТОР L4/L7 (TRex STL & ASTF) ---
+  trex_node:
+    label: "TRex Traffic Generator"
+    api_path: "/opt/trex/automation/trex_control_plane/interactive"
+    net:
+      ip: "127.0.0.1"        # IP для управления (ZMQ)
+      netns: null            # Работает в Host OS (DPDK)
+      
+      # 🟢 ПРАВИЛЬНАЯ ПРИВЯЗКА ПОРТОВ:
+      interfaces:
+        port_0:
+          role: "client"
+          network_ref: "external"    # Смотрит во внешний VLAN 500
+          addr: "10.0.50.3"
+        port_1:
+          role: "server"
+          network_ref: "server_farm" # Смотрит в серверный VLAN 447
+          addr: "10.0.70.2"
+          
+    services:
+      zmq_async: { port: 4502, protocol: "tcp" }
+      zmq_sync:  { port: 4503, protocol: "tcp" }
+    proc:
+      # 🟢 1. Определяем процесс STL и вешаем на него якорь &trex_base
+      trex-stl: &trex_base
+        label: "TRex STL Daemon"
+        service_name: "trex-2"
+        bin: "/opt/trex/t-rex-64"
+        config: "/etc/trex_cfg_2.yaml"
+        cwd: "/opt/trex"
+        wrapper: "/opt/pmi/lib/runners/trex_driver.py"
+        
+      # 🟢 2. Распаковываем базу и переопределяем нужные ключи
+      trex-astf:
+        <<: *trex_base
+        label: "TRex ASTF Daemon"
+        service_name: "trex-2-astf"
+
+  # --- ГЕНЕРАТОР L7 (JMeter) ---
+  jmeter_node:
+    label: "JMeter L7 Load Generator"    
+    network_ref: "external" # 🟢 Привязываем к внешней сети
+    net:
+      ip: "10.0.50.4"
+      cidr: "10.0.50.0/29"
+      gw: "10.0.50.2"
+      netns: "vlan500-jmeter"
+      iface: "ens29f1np1"
+    proc:
+      jmeter:
+        label: "Apache JMeter Engine"
+        bin: "/opt/jmeter/bin/jmeter"
+        wrapper: "/opt/pmi/lib/runners/jmeter_driver.py"
+    datasets:
+      data_dir: "/opt/pmi/profiles/jmeter/data"
+      source_ips: "source_ips.csv"
+      attack_ips: "attack_ips.csv"
+      base_uris: "uris.csv"
+
+  # --- МОНИТОРИНГ (Observability) ---
+  monitor:
+    label: "Monitoring"    
+    net:
+      ip: "10.207.129.23"
+      netns: null
+    services:
+      nginx_http_exp:
+        port: 80
+        protocol: "http"
+        path: "/"
+      nginx_https_exp:
+        port: 443
+        protocol: "https"
+        path: "/"
+      nginx_http_status_exp:
+        port: 8080
+        protocol: "http"
+        path: "/nginx_status"
+      grafana:
+        port: 3000
+        protocol: "http"
+        path: "/login"      
+      victoria_ui:
+        port: 8428
+        protocol: "http"
+        path: "/vmui/"      
+      victoria_api:
+        port: 8428
+        protocol: "http"
+        path: "/api/v1/import/prometheus"
+    proc:
+      grafana:
+        label: "Grafana"
+        bin: "/usr/sbin/grafana-server"
+        config: "/etc/grafana/grafana.ini"
+        cwd: "/usr/share/grafana"
+        service_name: "grafana-server"  # Имя systemd сервиса        
+      victoria:
+        label: "VictoriaMetrics"
+        bin: "/opt/victoria-metrics-prod"
+        config: "/etc/victoriametrics/prometheus.yml"
+        service_name: "victoriametrics"  # Имя systemd сервиса
+      exporter:
+        label: "Host Metrics Exporter"
+        bin: "/usr/local/bin/node_exporter"
+        service_name: "node_exporter"
+
+# ==============================================================================
+# 3. ОБЩИЕ ПУТИ (System Paths)
+# ==============================================================================
+paths:
+  base: "/opt/pmi"
+  bin: "/opt/pmi/bin"
+  lib: "/opt/pmi/lib"
+  config: "/opt/pmi/config"
+  docs: "/opt/pmi/docs"
+  logs: "/opt/pmi/logs"
+  results: "/opt/pmi/results"
+  profiles: "/opt/pmi/profiles"   # Глобальная папка профилей по умолчанию
+  payloads: "/opt/pmi/payloads"   # Глобальная папка пейлоадов по умолчанию
+  python: "/usr/bin/python3"
+  java: "/usr/bin/java"

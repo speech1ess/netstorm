@@ -1,0 +1,15 @@
+[Unit]
+Description=Node Exporter + Tunnel (Attack)
+After=network.target
+
+[Service]
+User=root
+ExecStart=/bin/bash -c '\
+  ip netns exec vlan500-jmeter /usr/local/bin/node_exporter --web.listen-address=":9102" --collector.disable-defaults --collector.netdev --collector.netstat & \
+  sleep 2; \
+  exec /usr/bin/socat TCP-LISTEN:9102,fork,bind=127.0.0.1 EXEC:"ip netns exec vlan500-jmeter socat STDIO TCP:127.0.0.1:9102"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

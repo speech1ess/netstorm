@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html class="bg-[#050505] text-green-500 font-mono">
+<head>
+    <meta charset="UTF-8">
+    <title>NETSTORM Orchestrator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/ui_templates.js" defer></script>
+    <script src="/static/terminal.js"></script>
+    <script src="/static/tab_configs.js"></script>
+    <script src="/static/tab_diag.js"></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body class="p-6">
+
+    <nav class="flex flex-wrap gap-4 md:gap-6 mb-2 border-b border-green-900 pb-4 items-center sticky top-0 bg-[#050505] z-10 shadow-[0_10px_30px_-10px_rgba(0,0,0,1)]">
+        <span class="text-white font-bold text-xl mr-2 tracking-wider">NET<span class="text-green-500">STORM</span></span>
+        
+        <button onclick="switchTab('tests')" id="tab-tests" class="tab-btn opacity-100 text-white border-b-2 border-green-500 pb-1 transition text-[11px] uppercase tracking-wider font-bold">🎯 Сценарии</button>
+        <button onclick="switchTab('profiles')" id="tab-profiles" class="tab-btn opacity-60 hover:opacity-100 hover:text-white pb-1 transition text-[11px] uppercase tracking-wider font-bold">🗂️ Профили</button>
+        <button onclick="switchTab('diag')" id="tab-diag" class="tab-btn opacity-60 hover:opacity-100 hover:text-white pb-1 transition text-[11px] uppercase tracking-wider font-bold">🛠 Диагностика</button>
+        <button onclick="switchTab('configs')" id="tab-configs" class="tab-btn opacity-60 hover:opacity-100 hover:text-white pb-1 transition text-[11px] uppercase tracking-wider font-bold">⚙️ Конфигурация</button>
+        <button onclick="switchTab('logs')" id="tab-logs" class="tab-btn opacity-60 hover:opacity-100 hover:text-white pb-1 transition text-[11px] uppercase tracking-wider font-bold">🗄️ Логи и Отчеты</button>
+        
+        <div class="w-px h-6 bg-zinc-800 mx-2 hidden md:block"></div>
+        
+        <a href="http://10.207.129.23:8080/" target="_blank" class="text-blue-400 hover:text-blue-300 transition text-[11px] uppercase font-bold">📊 Отчеты ↗</a>
+        <a href="http://10.207.129.23:3000/d/pmi-mission-control/pmi-control-panel" target="_blank" class="text-blue-400 hover:text-blue-300 transition text-[11px] uppercase font-bold">📈 Мониторинг ↗</a>
+        
+        <div class="ml-auto flex items-center gap-3">
+            <button id="kill-btn" onclick="activateKillSwitch()" class="hidden text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded bg-red-900/80 text-white border border-red-500 hover:bg-red-500 transition shadow-[0_0_15px_rgba(239,68,68,0.5)] items-center gap-1 cursor-pointer">
+                🛑 KILL
+            </button>
+            <div id="run-status" class="text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded bg-zinc-800 text-zinc-500 border border-zinc-700 hidden md:flex items-center gap-2 cursor-pointer" onclick="document.getElementById('terminal-container').classList.remove('hidden')">
+                <span class="w-2 h-2 rounded-full bg-zinc-500"></span> IDLE
+            </div>
+            <div id="st-line" class="text-[11px] text-green-400 bg-green-900/20 px-4 py-1.5 rounded border border-green-900/50 hidden md:block"></div>
+        </div>
+    </nav>
+
+    <div class="max-w-[1600px] mx-auto pb-20">
+        
+        <div id="action-bar" class="mb-6 px-1 transition-all">
+            <div class="flex flex-col sm:flex-row justify-between items-center bg-[#0a0a0a] border border-zinc-800/80 rounded-lg p-3 shadow-md gap-4">
+                <div class="flex items-center bg-[#151515] border border-zinc-700 rounded px-3 py-2 w-full sm:w-auto">
+                    <span class="text-sm opacity-80 mr-2">⚙️</span>
+                    <label for="pmi-select" class="text-zinc-500 text-[10px] font-bold tracking-widest mr-3 uppercase">SOURCE:</label>
+                    <div class="relative flex-grow sm:flex-grow-0">
+                        <select id="pmi-select" class="bg-transparent text-green-400 font-bold text-[12px] outline-none cursor-pointer appearance-none pr-6 w-full sm:min-w-[250px]" onchange="switchPMI(this.value)">
+                            <option value="">Loading configs...</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center text-green-500/50 text-[10px]">▼</div>
+                    </div>
+                </div>
+                <button onclick="runAllScenarios()" class="w-full sm:w-auto bg-[#1a222c] text-gray-200 border border-blue-900/50 hover:border-green-500 hover:bg-green-900/20 hover:text-green-400 px-5 py-2.5 rounded transition duration-200 text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm">
+                    🚀 RUN ALL SCENARIOS
+                </button>
+            </div>
+        </div>
+
+        <div id="terminal-container" class="hidden mb-8 bg-[#050505] border border-zinc-700 rounded-lg font-mono text-[11px] text-green-400 h-64 overflow-y-auto shadow-[inset_0_0_20px_rgba(0,0,0,1)] relative">
+            <div class="sticky top-0 z-10 bg-[#050505]/95 border-b border-zinc-800 p-2 px-4 flex justify-between items-center backdrop-blur-sm">
+                <div class="text-zinc-500 text-[10px] uppercase tracking-widest font-bold">Live Execution Log</div>
+                <div class="flex items-center gap-3">
+                    <button onclick="clearTerminal()" class="text-zinc-400 hover:text-yellow-500 font-bold px-3 py-1 transition text-[10px] uppercase tracking-widest flex items-center gap-1 bg-zinc-900 border border-zinc-700 rounded hover:border-yellow-600 shadow-sm" title="Clear log">
+                        <span class="text-red-400">🧹</span> CLEAR
+                    </button>
+                    <button onclick="document.getElementById('terminal-container').classList.add('hidden')" class="text-zinc-500 hover:text-white hover:bg-red-900/50 font-bold px-3 py-1 transition text-xs text-center border border-transparent hover:border-red-500 rounded" title="Close window">
+                        ✕ Закрыть
+                    </button>
+                </div>
+            </div>
+            <div class="p-4 pt-2">
+                <div id="term-content" class="whitespace-pre-wrap leading-relaxed inline"></div><span class="cursor-blink bg-green-500 w-2 h-3 inline-block ml-1 align-middle"></span>
+            </div>
+        </div>
+
+        <div id="grid"></div>
+
+        <div id="configs-container" class="hidden transition-all pb-10">
+            <div class="flex flex-col lg:flex-row gap-6">
+                <div class="lg:w-1/3 flex flex-col gap-6">
+                    <div id="dynamic-network-setup"></div>
+                    <div id="dynamic-target-setup"></div>
+                </div>                
+                <div class="lg:w-2/3 flex flex-col h-full">
+                    <div class="bg-[#0a0a0a] border border-zinc-800/80 rounded-lg p-5 shadow-md flex-grow flex flex-col min-h-[600px]">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 border-b border-zinc-800 pb-3 gap-3">
+                            <div>
+                                <h3 class="text-white text-[14px] font-bold flex items-center gap-2 m-0 tracking-wider">
+                                    <span class="text-yellow-500">📄</span> Просмотр файлов конфигураций
+                                </h3>
+                                <div id="configFilePath" class="text-zinc-500 text-[10px] mt-1 font-mono tracking-widest">/opt/pmi/config/test_program.yaml</div>
+                            </div>
+                            <div class="relative w-full sm:w-auto">
+                                <select id="configViewerSelect" class="w-full sm:w-[250px] bg-[#151515] border border-zinc-700 text-green-400 font-bold rounded px-3 py-1.5 text-[11px] uppercase tracking-wider outline-none focus:border-green-500 appearance-none cursor-pointer pr-8" onchange="loadConfigContent()">
+                                    <option value="">Загрузка списка...</option>
+                                </select>
+                                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-green-500/50 text-[10px]">▼</div>
+                            </div>
+                        </div>
+                        <div class="flex-grow bg-black border border-zinc-700 rounded p-4 overflow-y-auto shadow-[inset_0_0_20px_rgba(0,0,0,1)] relative">
+                            <pre class="m-0 whitespace-pre-wrap absolute inset-0 p-4"><code id="configContentBox" class="font-mono text-[11px] text-green-400 leading-relaxed block h-full"># Ожидание выбора файла...</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="diag-container" class="hidden transition-all pb-10">
+            <div class="flex flex-col lg:flex-row gap-6">            
+                <div class="lg:w-1/3 flex flex-col gap-6">
+                    <div id="diag-menu-buttons" class="flex flex-col gap-6"></div>
+                </div>           
+                <div class="lg:w-2/3 flex flex-col h-full">
+                    <div class="bg-[#0a0a0a] border border-zinc-800/80 rounded-lg p-5 shadow-md flex-grow flex flex-col min-h-[600px]">                    
+                        <div class="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-4 border-b border-zinc-800 pb-3 gap-3">                        
+                            <div>
+                                <h3 class="text-white text-[14px] font-bold flex items-center gap-2 m-0 tracking-wider">
+                                    <span class="text-zinc-300">📄</span> Просмотр файлов диагностики
+                                </h3>
+                                <div id="diagFilePath" class="text-zinc-500 text-[10px] mt-1 font-mono tracking-widest">/opt/pmi/logs/latest/...</div>
+                            </div>                        
+                            <div class="flex items-center gap-2 w-full xl:w-auto">                            
+                                <div class="relative hidden md:block w-[150px] xl:w-[180px]">
+                                    <span class="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600 text-[10px]">🔍</span>
+                                    <input type="text" id="diagSearchInput" placeholder="Фильтр лога..." 
+                                        oninput="filterDiagLog(this.value)"
+                                        class="w-full bg-[#151515] border border-zinc-700 text-gray-300 rounded pl-7 pr-2 py-1.5 text-[11px] outline-none focus:border-zinc-500 font-mono">
+                                </div>
+                                <div class="relative w-[180px] xl:w-[220px]">
+                                    <select id="diagViewerSelect" onchange="loadDiagContent()" 
+                                            class="w-full bg-[#151515] border border-zinc-700 text-blue-400 font-bold rounded pl-3 pr-8 py-1.5 text-[11px] uppercase tracking-wider outline-none focus:border-blue-500 appearance-none cursor-pointer truncate">
+                                        <option value="">Загрузка списка...</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-blue-500/50 text-[10px]">▼</div>
+                                </div>
+                                <button onclick="initDiagViewer()" class="text-zinc-400 hover:text-white bg-[#151515] border border-zinc-700 hover:border-zinc-500 px-2.5 py-1.5 rounded transition flex items-center justify-center" title="Обновить список">
+                                    🔄
+                                </button>
+                                <button onclick="downloadCurrentDiag()" class="text-blue-400 hover:text-white bg-blue-900/20 border border-blue-800 hover:bg-blue-600 px-2.5 py-1.5 rounded transition flex items-center justify-center" title="Скачать лог">
+                                    ⬇️
+                                </button>
+                            </div>
+                        </div>                    
+                        <div id="diagScrollContainer" class="flex-grow bg-black border border-zinc-700 rounded p-4 overflow-y-auto shadow-[inset_0_0_20px_rgba(0,0,0,1)] relative">
+                            <pre class="m-0 whitespace-pre-wrap absolute inset-0 p-4"><code id="diagContentBox" class="font-mono text-[11px] text-zinc-300 leading-relaxed block h-full"># Выберите файл лога...</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    <div id="custom-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div class="bg-[#0a0a0a] border border-green-500/50 rounded-lg p-6 w-[500px] shadow-[0_0_30px_rgba(0,255,65,0.15)] transform transition-all max-h-[90vh] flex flex-col">
+            <h3 class="text-white text-[12px] mb-5 border-b border-zinc-800 pb-3 flex items-center gap-2 shrink-0" id="modal-title">
+                ⚙️ Настройка параметров нагрузки
+            </h3>
+            
+            <div id="dynamic-modal-fields" class="space-y-4 mb-6 overflow-y-auto pr-2 flex-grow custom-scrollbar">
+            </div>
+
+            <div class="mt-2 mb-4 bg-gray-800 p-3 rounded border border-gray-700 flex items-center shrink-0">
+                <input type="checkbox" id="mod-report" class="w-5 h-5 text-green-500 bg-gray-900 border-gray-600 rounded focus:ring-green-500 focus:ring-2">
+                <label for="mod-report" class="ml-3 text-sm font-medium text-gray-200 cursor-pointer">
+                    📊 Generate HTML Report
+                </label>
+            </div>
+
+            <div class="flex justify-end gap-3 shrink-0">
+                <button onclick="closeCustomModal()" class="px-4 py-2 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-white transition text-[10px] font-bold uppercase tracking-wider">Отмена</button>
+                <button onclick="submitCustomModal()" class="px-4 py-2 rounded bg-green-900/30 border border-green-500 text-green-400 hover:bg-green-500 hover:text-black transition text-[10px] font-bold uppercase tracking-wider flex items-center gap-2">
+                    🚀 Запуск
+                </button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
