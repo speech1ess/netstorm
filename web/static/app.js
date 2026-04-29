@@ -205,23 +205,28 @@ function executeDropdown(selectId) {
     processPayload(payload);
 }
 
-// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ ПОЛЕЙ ---
 function buildFieldHtml(actorIndex, fieldKey, fieldLabel, defaultValue) {
     const inputId = `mod_a${actorIndex}_${fieldKey}`;
     const val = (defaultValue !== undefined && defaultValue !== null) ? defaultValue : '';
+    // Добавлены стили фокуса, центрирование и аккуратный плейсхолдер
     return `
-    <div class="flex items-center justify-between mt-2">
-        <span class="text-gray-300 text-xs">${fieldLabel}</span>
-        <input type="text" id="${inputId}" data-actor="${actorIndex}" data-key="${fieldKey}" value="${val}" class="w-28 bg-black border border-zinc-700 text-green-400 rounded px-2 py-1 text-sm outline-none focus:border-green-500 text-center" placeholder="auto">
+    <div class="flex items-center justify-between mt-2 group">
+        <span class="text-gray-300 text-[11px] group-hover:text-white transition-colors cursor-help">${fieldLabel}</span>
+        <input type="text" id="${inputId}" data-actor="${actorIndex}" data-key="${fieldKey}" value="${val}" 
+            class="w-24 bg-[#050505] border border-zinc-700 text-green-400 font-bold rounded px-2 py-1.5 text-[11px] outline-none focus:border-green-500 focus:shadow-[0_0_10px_rgba(34,197,94,0.15)] transition text-center placeholder-zinc-700" 
+            placeholder="auto">
     </div>`;
 }
 
-// 🚀 НОВАЯ ФУНКЦИЯ РЕНДЕРА МОДАЛКИ
+// 🚀 ФУНКЦИЯ РЕНДЕРА МОДАЛКИ (Вставь в app.js)
 function processPayload(payload) {
+    // 🚨 ДОБАВИТЬ ЭТИ ДВЕ СТРОКИ ДЛЯ ДЕБАГА 🚨
+    console.log("🔥 [DEBUG] Входящий PAYLOAD:", JSON.parse(JSON.stringify(payload)));
+    alert("Новый код работает! Лейбл: " + payload.label);
+    
     if (payload.preset === 'custom' || payload.label.includes('Custom')) {
         pendingPayload = payload;
         
-        // 🔍 УМНЫЙ ПОИСК ЛЕЙБЛА (обходим баг с отсутствующим scen_id)
         const actualScenId = payload.scen_id || (payload.args ? payload.args[0] : null);
         let prettyLabel = payload.label; 
         
@@ -229,10 +234,7 @@ function processPayload(payload) {
             const findParentLabel = (nodes) => {
                 for (const node of nodes) {
                     if (node.children) {
-                        // Ищем кнопку, у которой scen_id ИЛИ первый аргумент равен нашему ID
-                        if (node.children.some(c => c.scen_id === actualScenId || (c.args && c.args[0] === actualScenId))) {
-                            return node.label;
-                        }
+                        if (node.children.some(c => c.scen_id === actualScenId || (c.args && c.args[0] === actualScenId))) return node.label;
                         const found = findParentLabel(node.children);
                         if (found) return found;
                     }
@@ -240,37 +242,73 @@ function processPayload(payload) {
                 return null;
             };
             const foundLabel = findParentLabel(globalMenu);
-            if (foundLabel) {
-                // ✂️ МАГИЯ: Отрезаем "SYN1_UDP_STEP: " от названия
-                // Если есть двоеточие, берем всё что после него. Если нет - оставляем как есть.
-                prettyLabel = foundLabel.includes(': ') ? foundLabel.split(': ').slice(1).join(': ') : foundLabel;
-            }
+            if (foundLabel) prettyLabel = foundLabel.includes(': ') ? foundLabel.split(': ').slice(1).join(': ') : foundLabel;
         }
 
-        document.getElementById('modal-title').innerHTML = `⚙️ Настройка параметров:<span class="text-green-500 text-[13px] tracking-normal leading-tight ml-2">${prettyLabel}</span>`;
-        
+        document.getElementById('modal-title').innerHTML = `⚙️ Настройка параметров:<span class="text-green-500 text-[12px] tracking-normal leading-tight ml-2 truncate" title="${prettyLabel}">${prettyLabel}</span>`;
         const container = document.getElementById('dynamic-modal-fields');
         container.innerHTML = ''; 
         
         const reportCb = document.getElementById('mod-report');
         if (reportCb) reportCb.checked = false;
 
-        // 🧠 Вытаскиваем схему, которую нам бережно собрал Питон
+        // 🧠 Сборка схемы и глубокое слияние для NDR (Бинарный поиск)
         const schema = payload.custom_schema || {};
         const targetActors = schema.actors || [];
+
+        const baseSeries = payload.series || schema.series || {};
+        const overrideSeries = payload.overrides?.series || {};
+        const mergedSeries = { ...baseSeries, ...overrideSeries };
+
+        // 🎯 Агрессивный детект NDR / Бинарного поиска
+        const isBinarySearch = 
+            mergedSeries.type === 'binary_search' || 
+            payload.type === 'binary_search' || 
+            (payload.label && payload.label.toLowerCase().includes('binary search'));
 
         let html = `
         <div class="bg-zinc-900/50 p-3 rounded border border-zinc-800 mb-4 shadow-sm">
             <label class="block text-zinc-400 text-[10px] font-bold uppercase tracking-widest mb-1">Общие параметры</label>
-            ${buildFieldHtml('global', 'duration', 'Duration (сек)', schema.duration)}
+            ${buildFieldHtml('global', 'duration', 'Duration (сек)', payload.overrides?.duration ?? payload.duration ?? schema.duration)}
         `;
 
-        // Добавляем шаги для смарт-степперов
-        if (payload.is_series || schema.repeats !== undefined) {
+        if (isBinarySearch) {
+            html += `</div>`; 
+            
+            const bsMin = mergedSeries.min ?? '';
+            const bsMax = mergedSeries.max ?? '';
+            const bsPrec = mergedSeries.precision ?? '';
+            const bsInterval = payload.overrides?.interval ?? payload.interval ?? schema.interval ?? 30;
+
+            html += `
+            <div class="bg-zinc-900/50 p-3 rounded border border-zinc-800 mb-4 shadow-sm border-l-2 border-l-orange-500">
+                <label class="block text-orange-400 text-[10px] font-bold uppercase tracking-widest mb-3 flex items-center gap-2">
+                    🔍 Бинарный поиск (Limits)
+                </label>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-1 mb-2">
+                    ${buildFieldHtml('series', 'min', 'Min Rate', bsMin)}
+                    ${buildFieldHtml('series', 'max', 'Max Rate', bsMax)}
+                    ${buildFieldHtml('series', 'precision', 'Precision', bsPrec)}
+                    ${buildFieldHtml('global', 'interval', 'Interval (сек)', bsInterval)}
+                </div>`;
+
+            // Условный рендер метрик (Drops / Threshold), если они есть в конфиге
+            if (mergedSeries.metric !== undefined || mergedSeries.threshold !== undefined) {
+                html += `
+                <div class="mt-3 pt-3 border-t border-zinc-800/50 grid grid-cols-2 gap-4">
+                    ${mergedSeries.metric !== undefined ? buildFieldHtml('series', 'metric', 'Target Metric', mergedSeries.metric) : ''}
+                    ${mergedSeries.threshold !== undefined ? buildFieldHtml('series', 'threshold', 'Threshold', mergedSeries.threshold) : ''}
+                </div>`;
+            }
+
+            html += `</div>`;
+        } else if (payload.is_series || schema.repeats !== undefined) {
             if (schema.repeats !== undefined && schema.repeats !== "") html += buildFieldHtml('global', 'repeats', 'Repeats (Кол-во шагов)', schema.repeats);
             if (schema.interval !== undefined && schema.interval !== "") html += buildFieldHtml('global', 'interval', 'Interval (Пауза, сек)', schema.interval);
+            html += `</div>`;
+        } else {
+            html += `</div>`;
         }
-        html += `</div>`;
 
         // Рендерим акторов
         if (targetActors.length > 0) {
@@ -281,22 +319,25 @@ function processPayload(payload) {
                 const profileName = actor.profile || 'default';
 
                 html += `
-                <div class="bg-zinc-900/50 p-3 rounded border border-zinc-800 mb-4 shadow-sm">
-                    <label class="block text-zinc-400 text-[10px] font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
-                        <span class="${color}">${title}</span> <span class="text-zinc-500 normal-case tracking-normal">(${profileName})</span>
+                <div class="bg-zinc-900/50 p-3 rounded border border-zinc-800 mb-4 shadow-sm hover:border-zinc-700 transition-colors">
+                    <label class="block text-zinc-400 text-[10px] font-bold uppercase tracking-widest mb-2 flex items-center justify-between">
+                        <span><span class="${color}">${title}</span></span>
+                        <span class="text-zinc-500 normal-case font-mono tracking-normal text-[9px] truncate max-w-[150px]" title="${profileName}">${profileName}</span>
                     </label>`;
 
                 if (isTRex) {
-                    let multVal = actor.overridemult;
-                    // Обработка смарт-степперов ({start: 5, step: 5})
-                    if (typeof multVal === 'object' && multVal !== null) {
-                        html += buildFieldHtml(i, 'mult_start', 'Multiplier (Start)', multVal.start);
-                        html += buildFieldHtml(i, 'mult_step', 'Multiplier (Step)', multVal.step);
+                    if (!isBinarySearch) {
+                        let multVal = actor.overridemult;
+                        if (typeof multVal === 'object' && multVal !== null) {
+                            html += buildFieldHtml(i, 'mult_start', 'Multiplier (Start)', multVal.start);
+                            html += buildFieldHtml(i, 'mult_step', 'Multiplier (Step)', multVal.step);
+                        } else {
+                            html += buildFieldHtml(i, 'overridemult', 'Multiplier', multVal);
+                        }
                     } else {
-                        html += buildFieldHtml(i, 'overridemult', 'Multiplier', multVal);
+                        html += `<div class="text-[10px] text-zinc-500 italic mt-2 mb-2 border-l-2 border-zinc-700 pl-2">Множитель контролируется алгоритмом поиска.</div>`;
                     }
 
-                    // Вытаскиваем Tunables
                     if (actor.tunables) {
                         html += `<div class="mt-3 pt-2 border-t border-zinc-800/50">
                                     <span class="text-zinc-500 text-[9px] uppercase tracking-wider block mb-1">Tunables</span>`;
@@ -314,7 +355,7 @@ function processPayload(payload) {
                 html += `</div>`;
             });
         } else {
-            html += `<div class="text-zinc-500 text-xs italic mt-4 text-center">Настройки акторов не найдены в схеме</div>`;
+            html += `<div class="text-zinc-500 text-[11px] italic mt-4 text-center p-4 border border-zinc-800/50 rounded border-dashed">Настройки акторов не найдены в схеме</div>`;
         }
 
         container.innerHTML = html;
@@ -332,40 +373,48 @@ function processPayload(payload) {
     executeFinal(payload, null);
 }
 
-// 🚀 НОВАЯ ФУНКЦИЯ СБОРКИ (ПАКУЕТ В JSON ДЛЯ ПИТОНА)
+// 🚀 ФУНКЦИЯ СБОРКИ (Вставь в app.js)
 function submitCustomModal() {
     if (!pendingPayload || !pendingPayload.custom_schema) {
         closeCustomModal();
         return;
     }
     
-    let payloadToRun = JSON.parse(JSON.stringify(pendingPayload)); 
-    const wantsReport = document.getElementById('mod-report') ? document.getElementById('mod-report').checked : false;
-
+    let payloadToRun = typeof structuredClone === "function" 
+        ? structuredClone(pendingPayload) 
+        : JSON.parse(JSON.stringify(pendingPayload)); 
+        
+    const wantsReport = document.getElementById('mod-report')?.checked || false;
     let customOverrides = { actors: {} };
+    
     const inputs = document.querySelectorAll('#dynamic-modal-fields input[data-actor]');
     
     inputs.forEach(input => {
         const aIdx = input.getAttribute('data-actor');
         const fKey = input.getAttribute('data-key');
-        const val = input.value;
+        const rawVal = input.value.trim();
         
-        if (!val) return;
-        const numVal = isNaN(val) ? val : Number(val);
+        if (rawVal === '') return; 
+        
+        const numVal = !isNaN(rawVal) && rawVal !== '' ? Number(rawVal) : rawVal;
 
         if (aIdx === 'global') {
             customOverrides[fKey] = numVal;
             return;
         }
 
-        // Связываем инпут с правильным актором по индексу
+        if (aIdx === 'series') {
+            if (!customOverrides.series) customOverrides.series = { type: 'binary_search' };
+            customOverrides.series[fKey] = numVal;
+            return;
+        }
+
         const schemaActor = payloadToRun.custom_schema.actors[aIdx];
         if (!schemaActor) return;
         
         const aKey = schemaActor.profile || schemaActor.tool || 'baseline';
         if (!customOverrides.actors[aKey]) customOverrides.actors[aKey] = {};
 
-        // Раскладываем по полочкам (tunables, mult и т.д.)
         if (fKey.startsWith('tunable_')) {
             const tKey = fKey.replace('tunable_', '');
             if (!customOverrides.actors[aKey].tunables) customOverrides.actors[aKey].tunables = {};
@@ -381,8 +430,10 @@ function submitCustomModal() {
 
     closeCustomModal(); 
     
+    const jsonString = JSON.stringify(customOverrides).replace(/'/g, "'\\''");
+    
     let argsArr = [];
-    argsArr.push(`--custom-payload '${JSON.stringify(customOverrides)}'`);
+    argsArr.push(`--custom-payload '${jsonString}'`);
     if (wantsReport) argsArr.push("--report");
 
     executeFinal(payloadToRun, argsArr.join(' '));

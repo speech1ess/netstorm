@@ -8,6 +8,7 @@ program:
   description: "НТ NGFW: Матрица деградации, емкость, инфраструктурная устойчивость."
   dut:
     label: "... NGFW Appliance (L3 Inline Mode)"
+    type: "NGFW"
     mgmt_ip: "10.207.129.21"
     datapath:
       ext_ip: "10.0.60.5"
@@ -231,34 +232,9 @@ scenarios:
           overrides:
             actors:
               astf_http_cps: { overridemult: { start: 50, step: 25 } }
-    SYN4_TCP_BIN:
+    SYN4_UDP_PPS_STEP:
       type: "series"
-      label: "TCP CPS Limit Binary Search [SYN4_TCP_BIN] (10k-200k CPS)"
-      prompt: "[INFO]: L4 Mode. Автоматический поиск потолка TCP CPS."
-      health_check: true
-      duration: 60       
-      interval: 30       
-      series:
-        type: "binary_search"
-        min: 10          
-        max: 200         
-        precision: 5     
-      actors:
-        - tool: "trex"
-          profile: "astf_tcp_cps"  
-      presets:
-        limit_100k:
-          label: "🏢 Enterprise (Max 100k CPS)"
-          overrides: { series: { type: "binary_search", min: 1, max: 100, precision: 2 } }
-        limit_500k:
-          label: "☁️ DataCenter (Max 500k CPS)"
-          overrides: { series: { type: "binary_search", min: 10, max: 500, precision: 10 } }
-        limit_mellanox:
-          label: "🚀 Mellanox Mode (Max 2M CPS)"
-          overrides: { series: { type: "binary_search", min: 100, max: 2000, precision: 50 } }
-    SYN5_UDP_PPS_STEP:
-      type: "series"
-      label: "UDP PPS Capacity Smart-Stepper Search [SYN5_UDP_PPS_STEP] (1M -> 14M PPS)"
+      label: "UDP PPS Capacity Smart-Stepper Search [SYN4_UDP_PPS_STEP] (1M -> 14M PPS)"
       prompt: "[INFO]: Ищем аппаратный потолок PPS."
       repeats: 10         # Количество ступенек (например, 10 ступенек дойдут до 10M PPS)
       interval: 30        # Длительность одной ступеньки
@@ -279,6 +255,31 @@ scenarios:
           overrides:
             actors:
               udp_flood_64b: { overridemult: { start: 1000, step: 500 } }
+    SYN5_TCP_BIN:
+      type: "series"
+      label: "TCP CPS Limit Binary Search [SYN5_TCP_BIN] (10k-200k CPS)"
+      prompt: "[INFO]: L4 Mode. Автоматический поиск потолка TCP CPS."
+      health_check: true
+      duration: 180       
+      interval: 30       
+      series:
+        type: "binary_search"
+        min: 10          
+        max: 200         
+        precision: 5     
+      actors:
+        - tool: "trex"
+          profile: "astf_tcp_cps"  
+      presets:
+        limit_100k:
+          label: "🏢 Enterprise (Max 100k CPS)"
+          overrides: { series: { type: "binary_search", min: 1, max: 100, precision: 2 } }
+        limit_500k:
+          label: "☁️ DataCenter (Max 500k CPS)"
+          overrides: { series: { type: "binary_search", min: 10, max: 500, precision: 10 } }
+        limit_mellanox:
+          label: "🚀 Mellanox Mode (Max 2M CPS)"
+          overrides: { series: { type: "binary_search", min: 100, max: 2000, precision: 50 } }
     SYN6_MAX_CC:
       label: "Max Concurrent Connections Limit Search [SYN6_MAX_CC] (State Table Exhaustion)"
       prompt: "[INFO]: Ищем предел оперативной памяти (RAM) и таблицы трансляций NGFW."
@@ -316,23 +317,20 @@ scenarios:
         type: "binary_search"
         min: 1            
         max: 10           
-        precision: 0.5    
-        metric: "drops"   
-        threshold: 0.1    
-      template:
-        actors:
-          - <<: *TRex_ASTF
-            profile: "astf_emix_perim" 
+        precision: 0.5
+      actors:
+        - <<: *TRex_ASTF
+          profile: "astf_emix_perim" 
       presets:
         limit_10g:
           label: "🥉 Entry (Up to 10 Gbps)"
-          overrides: { series: { min: 1, max: 20, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 1, max: 20, precision: 1 } }
         limit_30g:
           label: "🥈 Mid-Range (Up to 30 Gbps)"
-          overrides: { series: { min: 10, max: 60, precision: 2 } }
+          overrides: { series: { type: "binary_search", min: 10, max: 60, precision: 2 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps)"
-          overrides: { series: { min: 20, max: 120, precision: 5 } }
+          overrides: { series: { type: "binary_search", min: 20, max: 120, precision: 5 } }
     CAP2_NDR_WE:
       type: "series"
       label: "West-East NDR Binary Search [CAP2_NDR_WE] (DataCenter Mix)"
@@ -344,27 +342,24 @@ scenarios:
         type: "binary_search"
         min: 1            
         max: 10           
-        precision: 0.5    
-        metric: "drops"   
-        threshold: 0.1    
-      template:
-        actors:
-          - <<: *TRex_ASTF
-            profile: "astf_emix_dc" 
+        precision: 0.5
+      actors:
+        - <<: *TRex_ASTF
+          profile: "astf_emix_dc" 
       presets:
         limit_10g:
           label: "🥉 Entry (Up to 10 Gbps)"
-          overrides: { series: { min: 1, max: 20, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 1, max: 20, precision: 1 } }
         limit_30g:
           label: "🥈 Mid-Range (Up to 30 Gbps)"
-          overrides: { series: { min: 10, max: 60, precision: 2 } }
+          overrides: { series: { type: "binary_search", min: 10, max: 60, precision: 2 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps)"
-          overrides: { series: { min: 20, max: 120, precision: 5 } }
+          overrides: { series: { type: "binary_search", min: 20, max: 120, precision: 5 } }
     # --- ШАГ 2.2: ИНТЕРАКТИВНАЯ МАТРИЦА ---
-    CAP3_PD1_NS:
+    CAP3_PD_NS:
       type: "series"
-      label: "North-South Degradation Matrix [CAP3_PD1_NS] (Perimeter Mix)"
+      label: "North-South Degradation Matrix [CAP3_PD_NS] (Perimeter Mix)"
       prompt: "[INFO]: СЕРИЯ (5 шагов). Включайте функции NGFW накопительно в паузах между тестами (для тестов с включенным IPS установить чекбокс 'Malware Overlay'):\n1) IPS\n2) FW (L3+L4)\n3) FW (L3+L4) + DPI\n4) FW (L3+L4) + DPI + IPS\n5) FW (L3+L4) + DPI + IPS + GeoIP"
       repeats: 5
       interactive: true
@@ -394,9 +389,9 @@ scenarios:
           overrides:
             actors:
               astf_emix_perim: { overridemult: 60 }
-    CAP4_PD2_WE:
+    CAP4_PD_WE:
       type: "series"
-      label: "West-East Degradation Matrix [CAP4_PD2_WE] (DataCenter Mix)"
+      label: "West-East Degradation Matrix [CAP4_PD_WE] (DataCenter Mix)"
       prompt: "[INFO]: СЕРИЯ (5 шагов). Включайте функции NGFW накопительно в паузах между тестами (для тестов с включенным IPS установить чекбокс 'Malware Overlay'):\n1) IPS\n2) FW (L3+L4)\n3) FW (L3+L4) + DPI\n4) FW (L3+L4) + DPI + IPS\n5) FW (L3+L4) + DPI + IPS + GeoIP"
       repeats: 5
       interactive: true

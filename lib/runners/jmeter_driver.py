@@ -5,6 +5,7 @@ import sys
 import os
 import subprocess
 import shutil
+import signal
 
 try:
     from shared import Colors, SharedConfig, SharedTrap
@@ -163,10 +164,15 @@ class JMeterDriver:
 
     def cleanup(self):
         if self.process and self.process.poll() is None:
-            Log.warning("Terminating JMeter...")
-            self.process.terminate()
-            try: self.process.wait(timeout=5)
-            except: self.process.kill()
+            Log.warning("Terminating JMeter Process Group...")
+            try:
+                # Получаем ID группы процессов (Process Group ID)
+                pgid = os.getpgid(self.process.pid)
+                # Убиваем ВЕСТЬ куст процессов разом жестко (SIGKILL)
+                os.killpg(pgid, signal.SIGKILL)
+            except Exception as e:
+                Log.warning(f"Process group kill failed (already dead?): {e}")
+                self.process.kill() # Фолбэк
 
     def run(self):
         SharedTrap.register(self.cleanup)
@@ -181,7 +187,8 @@ class JMeterDriver:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, 
                 text=True,
-                bufsize=1
+                bufsize=1,
+                start_new_session=True # 🟢 КРИТИЧЕСКИ ВАЖНО: Создает новую группу процессов!
             )
 
             self._tail_logs()

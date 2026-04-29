@@ -10,6 +10,8 @@ import warnings
 import ipaddress
 import subprocess
 import importlib.util
+import threading
+import queue
 
 warnings.filterwarnings("ignore")
 
@@ -77,7 +79,7 @@ class TRexServiceManager:
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. СБОР МЕТРИК (TELEMETRY)
+# 3. СБОР МЕТРИК (TELEMETRY - NON-BLOCKING)
 # ─────────────────────────────────────────────────────────────
 class TRexTelemetry:
     def __init__(self, log_name_base, profile_name):
@@ -91,8 +93,25 @@ class TRexTelemetry:
             port = mon.get('services', {}).get('victoria_api', {}).get('port', 8428)
             self.push_url = f"http://{ip}:{port}/api/v1/import/prometheus"
 
+        # --- ФОНОВЫЙ ВОРКЕР ---
+        self.queue = queue.Queue(maxsize=1000) # Буфер на 1000 метрик, чтобы не съесть память
+        if self.push_url:
+            self.worker = threading.Thread(target=self._worker_loop, daemon=True)
+            self.worker.start()
+
+    def _worker_loop(self):
+        """Читает очередь в фоне и шлет метрики по сети. Не блокирует генератор!"""
+        while True:
+            try:
+                lines = self.queue.get()
+                if lines is None: break # Сигнал к остановке (Poison Pill)
+                requests.post(self.push_url, data="\n".join(lines), timeout=1)
+            except Exception:
+                pass # Игнорируем сетевые ошибки, главная задача - не упасть
+            finally:
+                self.queue.task_done()
+
     def push_stl(self, stats, ports):
-        """Парсинг метрик для L3/L4 трафика"""
         if not self.push_url: return
         timestamp = int(time.time() * 1000)
         lines = []
@@ -109,18 +128,16 @@ class TRexTelemetry:
         self._send(lines)
 
     def push_astf(self, stats, ports):
-        """🟢 ПРАВИЛЬНЫЙ парсинг метрик для L7 (ASTF)"""
         if not self.push_url: return
         timestamp = int(time.time() * 1000)
         lines = []
         lbl = f'run_id="{self.run_id}",session="{self.session_id}",profile="{self.profile}"'
         
-        # Общая статистика L7 (Самое важное для ASTF)
         if traffic := stats.get('traffic'):
             client = traffic.get('client', {})
             metrics = {
                 "pmi_trex_astf_active_flows": client.get('tcps_connattempt', 0) - client.get('tcps_closed', 0),
-                "pmi_trex_astf_cps": client.get('tcps_connattempt', 0), # Это счетчик, Rate посчитает Victoria
+                "pmi_trex_astf_cps": client.get('tcps_connattempt', 0),
                 "pmi_trex_astf_tx_bps": client.get('tx_bps', 0),
                 "pmi_trex_astf_rx_bps": client.get('rx_bps', 0),
                 "pmi_trex_astf_err_drop": client.get('tcps_drops', 0)
@@ -129,10 +146,18 @@ class TRexTelemetry:
         self._send(lines)
 
     def _send(self, lines):
-        if lines:
-            try: requests.post(self.push_url, data="\n".join(lines), timeout=1)
-            except: pass
+        """Неблокирующая отправка в очередь"""
+        if lines and self.push_url:
+            try:
+                self.queue.put_nowait(lines)
+            except queue.Full:
+                pass # БД легла или сеть тормозит - просто дропаем метрики, но спасаем тест
 
+    def stop(self):
+        """Аккуратное завершение потока при остановке теста"""
+        if self.push_url:
+            try: self.queue.put_nowait(None)
+            except: pass
 
 # ─────────────────────────────────────────────────────────────
 # 4. ДРАЙВЕР УПРАВЛЕНИЯ ТРАФИКОМ
@@ -220,11 +245,15 @@ class TRexDriver:
     def _run_stl(self):
         l3_config = self._build_l3_config()
         c = STLClient(verbose_level='error', server=self.trex_ip, sync_port=self.sync_port, async_port=self.async_port)
+        
+        import threading
+        stop_event = threading.Event()
 
         def cleanup():
-            try:
-                if c.is_connected(): c.stop(ports=self.ports); c.disconnect()
-            except: pass
+            # 🟢 Обработчик сигнала только взводит флаг
+            Log.warning("🔴 [TRex Driver] Caught termination signal. Setting stop flag for STL...")
+            stop_event.set()
+            
         SharedTrap.register(cleanup)
 
         try:
@@ -250,7 +279,6 @@ class TRexDriver:
 
             c.set_service_mode(ports=self.ports, enabled=False)
             
-            # 🟢 Исправлено: используем load_py и передаём tunables как словарь (без **)
             Log.info(f"Loading STL Profile: {os.path.basename(self.profile_path)}")
             profile = STLProfile.load_py(self.profile_path, tunables=self.tunables)
             
@@ -260,14 +288,19 @@ class TRexDriver:
             start_ts = time.time()
             last_log_ts = 0
 
-            while c.is_traffic_active(ports=self.ports):
+            # 🟢 В условии цикла проверяем состояние флага остановки
+            while c.is_traffic_active(ports=self.ports) and not stop_event.is_set():
                 time.sleep(1)
                 elapsed = int(time.time() - start_ts)
                 now = time.time()
 
                 try:
                     stats = c.get_stats(ports=self.ports)
-                    self.telemetry.push_stl(stats, self.ports)
+                    
+                    if hasattr(self, 'telemetry') and self.telemetry.push_url:
+                        if not getattr(self.telemetry, 'worker', None) or not self.telemetry.worker.is_alive():
+                            pass
+                        self.telemetry.push_stl(stats, self.ports)
 
                     if now - last_log_ts >= 3:
                         tx_p, rx_p = self.ports[0], self.ports[1] if len(self.ports) > 1 else self.ports[0]
@@ -276,28 +309,57 @@ class TRexDriver:
                         
                         tx_str = f"{tx_pps/1e6:.2f}M" if tx_pps > 1e6 else f"{tx_pps/1e3:.1f}k"
                         bps_str = f"{tx_bps/1e9:.1f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
+                        
+                        import sys
+                        sys.stdout.flush()
+                        
                         Log.info(f"[{elapsed:3d}s] TX: {tx_str} pps ({bps_str}bps) | RX: {rx_pps:.0f} pps")
                         last_log_ts = now
-                except STLError: pass
-                if elapsed > self.duration + 5: break
+                except STLError: 
+                    pass
+                except Exception as e:
+                    Log.error(f"[{elapsed:3d}s] STL Stats Error: {e}")
+                    import sys
+                    sys.stdout.flush()
 
-            c.stop(ports=self.ports)
-            try: self.telemetry.push_stl(c.get_stats(ports=self.ports), self.ports)
-            except: pass
-            c.release(ports=self.ports)
+                if elapsed > self.duration + 5: 
+                    Log.warning("Duration exceeded limit. Breaking loop.")
+                    break
+
+            # 🟢 Безопасная процедура завершения в основном потоке
+            if stop_event.is_set():
+                Log.warning("STL Traffic loop aborted by Kill Switch. Executing safe shutdown sequence...")
+
+            if c.is_connected():
+                c.stop(ports=self.ports)
+                try: 
+                    self.telemetry.push_stl(c.get_stats(ports=self.ports), self.ports)
+                except: 
+                    pass
+                c.release(ports=self.ports)
+                
+            if hasattr(self, 'telemetry'):
+                self.telemetry.stop()
+                
             c.disconnect()
-            Log.success("TRex STL test finished.")
+            Log.success("TRex STL test finished gracefully.")
 
         except Exception as e:
             Log.error(f"Execution Error: {e}")
+            import sys
             sys.exit(1)
 
     def _run_astf(self):
         c = ASTFClient(server=self.trex_ip, sync_port=self.sync_port, async_port=self.async_port)
+        
+        import threading
+        stop_event = threading.Event()
+
         def cleanup():
-            try:
-                if c.is_connected(): c.stop(); c.disconnect()
-            except: pass
+            # 🟢 Обработчик сигнала ТОЛЬКО ставит флаг. Никакого сетевого I/O!
+            Log.warning("🔴 [TRex Driver] Caught termination signal. Setting stop flag...")
+            stop_event.set()
+            
         SharedTrap.register(cleanup)
 
         try:
@@ -322,29 +384,30 @@ class TRexDriver:
             last_tcp_attempt = 0 
             last_udp_flows = 0
 
-            while c.is_traffic_active():
+            # 🟢 В условии цикла проверяем состояние флага остановки
+            while c.is_traffic_active() and not stop_event.is_set():
                 time.sleep(1)
                 now = time.time()
                 elapsed = int(now - start_ts)
 
                 try:
                     stats = c.get_stats()
-                    self.telemetry.push_astf(stats, getattr(self, 'ports', [])) 
+                    
+                    if hasattr(self, 'telemetry') and self.telemetry.push_url:
+                        if not getattr(self.telemetry, 'worker', None) or not self.telemetry.worker.is_alive():
+                            pass # Worker is optional or failed, keep going
+                        self.telemetry.push_astf(stats, getattr(self, 'ports', [])) 
 
                     if now - last_log_ts >= 3:
                         time_delta = now - last_log_ts
                         total_stats = stats.get('global', stats.get('total', {}))
                         client = stats.get('traffic', {}).get('client', {})
                         
-                        # 🟢 Достаем глобальные счетчики TX и RX
                         tx_bps = total_stats.get('tx_bps', 0)
-                        rx_bps = total_stats.get('rx_bps', 0) # Читаем аппаратный RX
+                        rx_bps = total_stats.get('rx_bps', 0)
                         
-                        # Фолбэк на программные счетчики клиента, если глобальных нет
-                        if tx_bps == 0: 
-                            tx_bps = client.get('m_tx_bps', 0)
-                        if rx_bps == 0:
-                            rx_bps = client.get('m_rx_bps', 0)
+                        if tx_bps == 0: tx_bps = client.get('m_tx_bps', 0)
+                        if rx_bps == 0: rx_bps = client.get('m_rx_bps', 0)
                             
                         tcp_attempt = client.get('tcps_connattempt', 0)
                         tcp_closed = client.get('tcps_closed', 0)
@@ -359,14 +422,15 @@ class TRexDriver:
                         last_tcp_attempt = tcp_attempt
                         last_udp_flows = udp_flows
                         
-                        # Форматируем обе скорости
                         tx_str = f"{tx_bps/1e9:.1f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
                         rx_str = f"{rx_bps/1e9:.1f}G" if rx_bps > 1e9 else f"{rx_bps/1e6:.1f}M"
+                        
+                        # Принудительный сброс буфера логов
+                        import sys
                         
                         if elapsed < 3 or (tcp_cps <= 5 and udp_cps <= 5 and tcp_active == 0):
                             Log.info(f"[{elapsed:3d}s] ASTF INIT | Protocol Detection Phase... | TX: {tx_str}bps | RX: {rx_str}bps")
                         else:
-                            # 🟢 Умная логика вывода с добавленным RX
                             is_tcp = tcp_cps > 5 or tcp_active > 0
                             is_udp = udp_cps > 5
                             
@@ -380,22 +444,38 @@ class TRexDriver:
                                 Log.info(f"[{elapsed:3d}s] ASTF TCP | Active Flows: {tcp_active} | TX: {tx_str}bps | RX: {rx_str}bps | Drops: {tcp_drops}")                        
                         last_log_ts = now
                         
+                        sys.stdout.flush()
+
                 except Exception as e:
-                    if now - last_log_ts >= 3:
-                        Log.error(f"[{elapsed:3d}s] ASTF Stats Warning: {e}")
-                        last_log_ts = now
+                    Log.error(f"[{elapsed:3d}s] ASTF Stats Error: {e}")
+                    import sys
+                    sys.stdout.flush()
 
                 if elapsed > self.duration + 5: 
+                    Log.warning("Duration exceeded limit. Breaking loop.")
                     break
 
-            c.stop()
-            try: self.telemetry.push_astf(c.get_stats(), getattr(self, 'ports', []))
-            except: pass
+            # 🟢 Главный цикл завершен (или по таймеру, или по сигналу остановки)
+            if stop_event.is_set():
+                 Log.warning("Traffic loop aborted by Kill Switch. Executing safe shutdown sequence...")
+            
+            # Теперь мы безопасно вызываем RPC в контексте главного потока
+            if c.is_connected():
+                c.stop()
+                try: 
+                    self.telemetry.push_astf(c.get_stats(), getattr(self, 'ports', []))
+                except: 
+                    pass
+            
+            if hasattr(self, 'telemetry'):
+                 self.telemetry.stop()
+                 
             c.disconnect()
-            Log.success("TRex ASTF test finished.")
+            Log.success("TRex ASTF test finished gracefully.")
 
         except Exception as e:
             Log.error(f"Execution Error: {e}")
+            import sys
             sys.exit(1)
 # ─────────────────────────────────────────────────────────────
 # 5. УТИЛИТЫ ДАННЫХ

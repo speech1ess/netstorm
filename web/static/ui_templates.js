@@ -262,3 +262,14 @@ function buildPauseModalTemplate() {
     </div>
     `;
 }
+// 🟢 ГЕНЕРАТОР ПОЛЕЙ ДЛЯ МОДАЛКИ (Вставь в конец своего ui_templates.js)
+function buildFieldHtml(actorIndex, fieldKey, fieldLabel, defaultValue) {
+    const val = (defaultValue !== undefined && defaultValue !== null) ? defaultValue : '';
+    return `
+    <div class="flex items-center justify-between mt-2 group">
+        <span class="text-zinc-300 text-[11px] group-hover:text-white transition-colors cursor-help">${fieldLabel}</span>
+        <input type="text" data-actor="${actorIndex}" data-key="${fieldKey}" value="${val}" 
+            class="w-24 bg-[#050505] border border-zinc-700 text-green-400 font-bold rounded px-2 py-1.5 text-[11px] outline-none focus:border-green-500 focus:shadow-[0_0_10px_rgba(34,197,94,0.15)] transition text-center placeholder-zinc-700" 
+            placeholder="auto">
+    </div>`;
+}

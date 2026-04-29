@@ -1,4 +1,5 @@
 import subprocess
+import time
 import shlex
 import os
 import sys
@@ -30,21 +31,6 @@ class BatchPayload(BaseModel):
     interval: Optional[int] = 60
 
 router = APIRouter(prefix="/api", tags=["Execution"])
-
-@router.post("/kill")
-async def kill_processes():
-    logger.info("🛑 [KILL SWITCH] Received kill command from UI.")
-    try:
-        subprocess.call("pkill -f 'scenario_runner.py|jmeter_driver.py|trex_driver.py'", shell=True)
-        
-        if os.path.exists(SESSION_STATE_FILE):
-            try: os.remove(SESSION_STATE_FILE)
-            except: pass
-            
-        return {"status": "success", "output": "🛑 ВСЕ ТЕСТЫ ОСТАНОВЛЕНЫ!"}
-    except Exception as e:
-        logger.error(f"Kill switch failed: {e}")
-        return {"status": "error", "message": str(e)}
 
 @router.post("/execute")
 async def execute_action(payload: Request):
@@ -189,3 +175,47 @@ async def clear_logs():
         logger.info("Web log cleared and backed up via UI.")
         return {"status": "success", "output": f"Log backed up to pmi_web_{timestamp}.bak and cleared."}
     return {"status": "ignored", "output": "No web log found to clear."}
+
+import time
+import subprocess
+import os
+
+@router.post("/kill")
+async def kill_processes():
+    logger.info("🛑 [KILL SWITCH] Initiating Double-Tap shutdown sequence...")
+    try:
+        target_procs = "scenario_runner.py|jmeter_driver.py|trex_driver.py"
+        
+        # 1. SOFT KILL (SIGTERM) - Просим вежливо
+        subprocess.call(f"pkill -15 -f '{target_procs}'", shell=True)
+        logger.info("⏳ Sent SIGTERM. Waiting for Graceful Shutdown (up to 15s)...")
+        
+        graceful = False
+        # 2. Увеличили таймаут до 15 секунд (30 чеков по 0.5с)
+        for _ in range(30):
+            result = subprocess.run(f"pgrep -f '{target_procs}'", shell=True, capture_output=True)
+            if result.returncode != 0:
+                graceful = True
+                logger.info("✅ All drivers gracefully exited.")
+                break
+            time.sleep(0.5)
+            
+        # 3. HARD KILL (SIGKILL) - Добиваем зомби, если таймаут вышел
+        if not graceful:
+            logger.error("⚠️ Graceful shutdown timeout! Escalating to SIGKILL (-9).")
+            # Жестко убиваем куст процессов. В Linux это единственный 100% способ.
+            subprocess.call(f"pkill -9 -f '{target_procs}'", shell=True)
+            
+            # Для надежности можно добить конкретные бинарники, если драйверы их бросили
+            subprocess.call("pkill -9 -f 'java.*jmeter'", shell=True)
+            
+        # 4. Зачистка стейта для UI
+        if os.path.exists(SESSION_STATE_FILE):
+            try: os.remove(SESSION_STATE_FILE)
+            except OSError: pass
+            
+        return {"status": "success", "message": "🛑 Остановка завершена.", "graceful": graceful}
+        
+    except Exception as e:
+        logger.error(f"Kill switch failed: {e}")
+        return {"status": "error", "message": str(e)}

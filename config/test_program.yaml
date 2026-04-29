@@ -11,6 +11,7 @@ program:
   
   dut:
     label: "Кластер 2 х БИФИТ Митигатор v25.06 (Inline / режим L3-роутер)"
+    type: "AntiDDoS"
     mgmt_ip: "10.207.129.21"
     datapath:
       ext_ip: "10.0.60.5"

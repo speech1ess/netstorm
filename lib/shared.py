@@ -136,11 +136,11 @@ class TrapManager:
 def on_exit():
     """
     Global exit hook.
-    Triggers background report generation using subprocess.Popen (Fire-and-forget).
-    Requires PMI_RUN_ID env var.
+    Безопасно порождает независимый (detached) процесс генерации отчета,
+    используя системный вызов setsid (start_new_session=True).
     """
     try:
-        # Only run if we are the Orchestrator (not a child process)
+        # Защита от рекурсии: запускаем только если мы - главный Оркестратор
         if os.environ.get("PMI_IS_ORCH") != "1":
             return
             
@@ -149,33 +149,38 @@ def on_exit():
             return
 
         base_dir = SharedConfig.get('paths.base', '/opt/pmi')
-        lib_dir  = os.path.join(base_dir, 'lib')
-
-        summary_script = os.path.join(lib_dir, 'reporting', 'generate_run_summary.py')
-        index_script   = os.path.join(lib_dir, 'reporting', 'generate_index.py')
-
-        # Chain commands: python summary.py ID && python index.py --generate
-        cmds = []
-        if os.path.exists(summary_script):
-            cmds.append(f"{sys.executable} {summary_script} {session_id}")
         
-        if os.path.exists(index_script):
-            cmds.append(f"{sys.executable} {index_script} --generate")
-            
-        if cmds:
-            full_cmd = " && ".join(cmds)
-            # Запускаем в фоне (start_new_session=True отвязывает от текущего терминала)
-            subprocess.Popen(
-                full_cmd, 
-                shell=True,
-                stdout=subprocess.DEVNULL, 
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
+        # 🟢 Единая точка входа для подсистемы отчетов
+        report_engine_script = os.path.join(base_dir, 'lib', 'reporting', 'cli_runner.py')
 
-    except Exception:
-        # Silently fail on exit to avoid spamming stderr
-        pass
+        if not os.path.exists(report_engine_script):
+            # Fallback для совместимости, пока старые скрипты не выведены из эксплуатации
+            report_engine_script = os.path.join(base_dir, 'lib', 'reporting', 'generate_run_summary.py')
+
+        if not os.path.exists(report_engine_script):
+            sys.stderr.write(f"⚠️ [Report Engine] Entry point not found: {report_engine_script}\n")
+            return
+
+        # Формируем команду без shell=True (защита от инъекций и лишних форков bash)
+        cmd = [
+            sys.executable, 
+            report_engine_script, 
+            "--session", session_id,
+            "--rebuild-index"  # Флаг, говорящий движку обновить индекс после генерации
+        ]
+        
+        # Запуск в режиме Fire-and-Forget
+        # start_new_session=True эквивалентно setsid() в Linux, процесс полностью отрывается от родителя
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True 
+        )
+
+    except Exception as e:
+        # Пишем напрямую в системный stderr, так как логгеры на этапе on_exit могут быть уже уничтожены
+        sys.stderr.write(f"⚠️ [PMI Exit Hook] FATAL: Could not spawn report engine: {e}\n")
 
 # 🟢 ГЛОБАЛЬНЫЙ ПРЕДОХРАНИТЕЛЬ ДЛЯ ВЕБ-РЕЖИМА
 # Если загрузились под Веб-сервером, отключаем функцию input()
