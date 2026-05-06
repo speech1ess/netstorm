@@ -5,18 +5,18 @@
 # ═══════════════════════════════════════════════════════════
 
 program:
-  description: "НТ NGFW: Матрица деградации, емкость, инфраструктурная устойчивость."
+  description: "NGFW: Матрица деградации, емкость, инфраструктурная устойчивость"
   dut:
-    label: "... NGFW Appliance (L3 Inline Mode)"
+    label: "Континент 4 (v.4.2.1.-758) [L3 Inline Mode]"
     type: "NGFW"
-    mgmt_ip: "10.207.129.21"
+    mgmt_ip: "10.0.40.5"  # healthcheck
     datapath:
       ext_ip: "10.0.60.5"
       int_ip: "10.0.40.5"
-    thresholds:        # потери пакетов (в пакетах)
-      warn: 10
-      fatal: 50
-  
+    thresholds:        # потери пакетов (в процентах)
+      warn: 0.0005
+      fatal: 0.001
+
 # =========================================================
 # ШАБЛОНЫ
 # =========================================================
@@ -155,27 +155,27 @@ scenarios:
       repeats: 5          
       interval: 30        
       template:
-        duration: 60
+        duration: 180
         actors:
           - <<: *TRex_ASTF
             profile: astf_udp_cps
-            overridemult: { start: 5, step: 5 }
+            overridemult: { start: 50, step: 25 }
       presets:
         low:
-          label: "🐢 Low (Start: 5k, Step: 1k)"
+          label: "🐢 Low (Start: 50k, Step: 10k)"
           overrides:
             actors:
-              astf_udp_cps: { overridemult: { start: 5, step: 1 } }
+              astf_udp_cps: { overridemult: { start: 50, step: 10 } }
         medium:
-          label: "🚶 Medium (Start: 10k, Step: 10k)"
+          label: "🚶 Medium (Start: 100k, Step: 50k)"
           overrides:
             actors:
-              astf_udp_cps: { overridemult: { start: 10, step: 10 } }
+              astf_udp_cps: { overridemult: { start: 100, step: 50 } }
         high:
-          label: "🏃 High (Start: 50k, Step: 25k)"
+          label: "🏃 High (Start: 1000k, Step: 500k)"
           overrides:
             actors:
-              astf_udp_cps: { overridemult: { start: 50, step: 25 } }
+              astf_udp_cps: { overridemult: { start: 1000, step: 500 } }
     SYN2_TCP_STEP:
       type: "series"
       label: "TCP CPS Capacity Smart-Stepper Search [SYN2_TCP_STEP] (5k -> 25k CPS)"
@@ -183,7 +183,7 @@ scenarios:
       repeats: 5          
       interval: 30        
       template:
-        duration: 60
+        duration: 180
         actors:
           - <<: *TRex_ASTF
             profile: astf_tcp_cps
@@ -211,7 +211,7 @@ scenarios:
       repeats: 5          
       interval: 30        
       template:
-        duration: 60
+        duration: 180
         actors:
           - <<: *TRex_ASTF
             profile: astf_http_cps
@@ -223,33 +223,34 @@ scenarios:
             actors:
               astf_http_cps: { overridemult: { start: 5, step: 1 } }
         medium:
-          label: "🚶 Medium (Start: 10k, Step: 10k)"
+          label: "🚶 Medium (Start: 10k, Step: 5k)"
           overrides:
             actors:
-              astf_http_cps: { overridemult: { start: 10, step: 10 } }
+              astf_http_cps: { overridemult: { start: 10, step: 5 } }
         high:
-          label: "🏃 High (Start: 50k, Step: 25k)"
+          label: "🏃 High (Start: 50k, Step: 10k)"
           overrides:
             actors:
-              astf_http_cps: { overridemult: { start: 50, step: 25 } }
+              astf_http_cps: { overridemult: { start: 50, step: 10 } }
     SYN4_UDP_PPS_STEP:
       type: "series"
       label: "UDP PPS Capacity Smart-Stepper Search [SYN4_UDP_PPS_STEP] (1M -> 14M PPS)"
       prompt: "[INFO]: Ищем аппаратный потолок PPS."
+      health_check: true
       repeats: 10         # Количество ступенек (например, 10 ступенек дойдут до 10M PPS)
       interval: 30        # Длительность одной ступеньки
       template:
-        duration: 30
+        duration: 180
         actors:
           - tool: "trex"
             profile: "udp_flood_64b"
             overridemult: { start: 1000, step: 1000 }            
       presets:
         low_res:
-          label: "🐢 Грубый поиск (Шаг 2M PPS)"
+          label: "🐢 Грубый поиск (Шаг 1M PPS)"
           overrides:
             actors:
-              udp_flood_64b: { overridemult: { start: 1000, step: 2000 } }
+              udp_flood_64b: { overridemult: { start: 1000, step: 1000 } }
         high_res:
           label: "🏃 Точный поиск (Шаг 500k PPS)"
           overrides:
@@ -272,14 +273,14 @@ scenarios:
           profile: "astf_tcp_cps"  
       presets:
         limit_100k:
-          label: "🏢 Enterprise (Max 100k CPS)"
-          overrides: { series: { type: "binary_search", min: 1, max: 100, precision: 2 } }
+          label: "🏢 Enterprise (Max 100k CPS, precision 1)"
+          overrides: { series: { type: "binary_search", min: 10, max: 100, precision: 1 } }
         limit_500k:
-          label: "☁️ DataCenter (Max 500k CPS)"
-          overrides: { series: { type: "binary_search", min: 10, max: 500, precision: 10 } }
+          label: "☁️ DataCenter (Max 500k CPS, precision 1)"
+          overrides: { series: { type: "binary_search", min: 10, max: 500, precision: 1 } }
         limit_mellanox:
-          label: "🚀 Mellanox Mode (Max 2M CPS)"
-          overrides: { series: { type: "binary_search", min: 100, max: 2000, precision: 50 } }
+          label: "🚀 Mellanox Mode (Max 2M CPS, precision 5)"
+          overrides: { series: { type: "binary_search", min: 100, max: 2000, precision: 5 } }
     SYN6_MAX_CC:
       label: "Max Concurrent Connections Limit Search [SYN6_MAX_CC] (State Table Exhaustion)"
       prompt: "[INFO]: Ищем предел оперативной памяти (RAM) и таблицы трансляций NGFW."
@@ -323,14 +324,14 @@ scenarios:
           profile: "astf_emix_perim" 
       presets:
         limit_10g:
-          label: "🥉 Entry (Up to 10 Gbps)"
-          overrides: { series: { type: "binary_search", min: 1, max: 20, precision: 1 } }
+          label: "🥉 Entry (Up to 10 Gbps, precision: 1)"
+          overrides: { series: { type: "binary_search", min: 1, max: 12, precision: 1 } }
         limit_30g:
-          label: "🥈 Mid-Range (Up to 30 Gbps)"
-          overrides: { series: { type: "binary_search", min: 10, max: 60, precision: 2 } }
+          label: "🥈 Mid-Range (Up to 30 Gbps, precision: 1)"
+          overrides: { series: { type: "binary_search", min: 10, max: 35, precision: 1 } }
         limit_50g:
-          label: "🥇 High-End (Up to 50+ Gbps)"
-          overrides: { series: { type: "binary_search", min: 20, max: 120, precision: 5 } }
+          label: "🥇 High-End (Up to 50+ Gbps, precision: 2)"
+          overrides: { series: { type: "binary_search", min: 20, max: 60, precision: 2 } }
     CAP2_NDR_WE:
       type: "series"
       label: "West-East NDR Binary Search [CAP2_NDR_WE] (DataCenter Mix)"
@@ -348,14 +349,14 @@ scenarios:
           profile: "astf_emix_dc" 
       presets:
         limit_10g:
-          label: "🥉 Entry (Up to 10 Gbps)"
-          overrides: { series: { type: "binary_search", min: 1, max: 20, precision: 1 } }
+          label: "🥉 Entry (Up to 10 Gbps), precision: 1"
+          overrides: { series: { type: "binary_search", min: 1, max: 12, precision: 1 } }
         limit_30g:
-          label: "🥈 Mid-Range (Up to 30 Gbps)"
-          overrides: { series: { type: "binary_search", min: 10, max: 60, precision: 2 } }
+          label: "🥈 Mid-Range (Up to 30 Gbps), precision: 1"
+          overrides: { series: { type: "binary_search", min: 10, max: 35, precision: 1 } }
         limit_50g:
-          label: "🥇 High-End (Up to 50+ Gbps)"
-          overrides: { series: { type: "binary_search", min: 20, max: 120, precision: 5 } }
+          label: "🥇 High-End (Up to 50+ Gbps), precision: 2"
+          overrides: { series: { type: "binary_search", min: 20, max: 60, precision: 2 } }
     # --- ШАГ 2.2: ИНТЕРАКТИВНАЯ МАТРИЦА ---
     CAP3_PD_NS:
       type: "series"
@@ -364,7 +365,7 @@ scenarios:
       repeats: 5
       interactive: true
       template:
-        duration: 300
+        duration: 180
         actors:
           - <<: *TRex_ASTF
             profile: astf_emix_perim
@@ -623,7 +624,7 @@ scenarios:
   group_4:
     label: "Stability & Soak Test"
     ST1_NS:
-      label: "North-South Stability [ST1_NS] (8-24H)"
+      label: "North-South Stability [ST1_NS] (8-24H Perimeter Mix)"
       prompt: "[NGFW SETUP] Включите все рабочие профили безопасности. Трафик Север-Юг (Perimeter Mix)."
       duration: 43200  
       actors:
@@ -646,7 +647,7 @@ scenarios:
             duration: 86400
             actors: { astf_emix_perim: { overridemult: 4.5 } }
     ST2_WE:
-      label: "West-East Stability [ST2_WE] (8-24H)"
+      label: "West-East Stability [ST2_WE] (8-24H DataCenter Mix)"
       prompt: "[NGFW SETUP] Включите App-ID / Микросегментацию. Трафик Запад-Восток (DataCenter Mix)."
       duration: 43200  
       actors:

@@ -77,6 +77,11 @@ class ScenarioRunner:
         os.environ["PMI_RUN_ID"] = session_id
         Log.set_run_mode(session_id)
 
+        # 🟢 Дамп иммутабельного контекста при старте батч-сессии
+        log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), str(session_id))
+        os.makedirs(log_dir, exist_ok=True)
+        sc_utils.dump_session_meta(log_dir, self.conf)
+
         Log.info(f"=== SMART BATCH START: {len(target_ids)} scenarios ===")
         virtual_conf = {"type": "series", "series": target_ids, "interval": interval}
 
@@ -146,6 +151,11 @@ class ScenarioRunner:
         self.session_id = session_id
         os.environ["PMI_RUN_ID"] = session_id
         Log.set_run_mode(session_id)
+
+        # 🟢 Дамп иммутабельного контекста при старте single-сессии
+        log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), str(session_id))
+        os.makedirs(log_dir, exist_ok=True)
+        sc_utils.dump_session_meta(log_dir, self.conf)        
 
         Log.info(f"=== ORCHESTRATOR START: {label} ===")
         time.sleep(0.5)
@@ -259,21 +269,54 @@ class ScenarioRunner:
             time.sleep(1)
 
     def _trigger_report(self, session_id):
-        script = os.path.join(self.lib_dir, 'reporting', 'generate_run_summary.py')
-        Log.info(f"Looking for report script at: {script}") # 🟢 Посмотрим, куда он реально смотрит
+        """
+        Запуск генератора отчетов.
+        """
+        # 1. Целимся в новый фасад
+        script = os.path.join(self.lib_dir, 'reporting', 'reporter.py')
+        
+        # Fallback для плавного устранения техдолга (если ветка еще не смержена)
+        if not os.path.exists(script):
+            script = os.path.join(self.lib_dir, 'reporting', 'generate_run_summary.py')
+
+        Log.info(f"[*] Инициализация Report Engine: {script}")
         
         if os.path.exists(script):
-            Log.info(f"Generating report in background for session {session_id}...")
+            Log.info(f"[*] Запуск генерации отчета для сессии {session_id} в фоне...")
+            
+            # Подготовка лога для перехвата падений репортера
+            # Пытаемся взять пути из SharedConfig, если он импортирован в этом модуле
             try:
+                from shared import SharedConfig
+                log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), str(session_id))
+            except ImportError:
+                log_dir = f"/opt/pmi/logs/{session_id}"
+                
+            os.makedirs(log_dir, exist_ok=True)
+            crash_log_path = os.path.join(log_dir, f"reporter_crash_{session_id}.log")
+
+            try:
+                # 2. Строгий контракт: session_id передается как позиционный аргумент
+                cmd = [self.python_bin, script, str(session_id)]
+                
+                # Если в классе Оркестратора доступен тип DUT, можно прокинуть его явно:
+                # if hasattr(self, 'dut_type') and self.dut_type:
+                #     cmd.extend(['-t', str(self.dut_type)])
+
+                # 3. Открываем дескриптор для ядра. 
+                # Никаких 'with open()', иначе родитель закроет FD сразу после Popen.
+                err_file = open(crash_log_path, 'a')
+                
                 subprocess.Popen(
-                    [self.python_bin, script, session_id],
-                    stdout=subprocess.DEVNULL, 
-                    start_new_session=True
+                    cmd,
+                    stdout=subprocess.DEVNULL, # Обычный лог глушим
+                    stderr=err_file,           # Ошибки пишем на диск
+                    start_new_session=True     # Fire-and-forget
                 )
             except Exception as e:
-                Log.error(f"Failed to spawn report process: {e}")
+                Log.error(f"[!] Сбой запуска процесса отчетов: {e}")
         else:
-            Log.error(f"CRITICAL: Report script NOT FOUND at {script}!")
+            Log.error(f"[!] CRITICAL: Report script NOT FOUND at {script}!")
 
     def cleanup(self):
         if self.processes:

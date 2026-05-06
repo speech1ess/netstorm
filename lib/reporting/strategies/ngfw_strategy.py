@@ -3,30 +3,35 @@
 
 import re
 import os
-from pmi_logger import Log
-from reporting.strategies.ddos_strategy import DDoSReportStrategy
+import shutil
+import json
+from datetime import datetime
+from pathlib import Path
 
-class NGFWReportStrategy(DDoSReportStrategy):
+from pmi_logger import Log
+from reporting.analyzers.trex_analyzer import TRexRunAnalyzer
+from reporting.html_templates import NGFW_SESSION_REPORT_TEMPLATE
+from reporting.strategies.base_strategy import BaseReportStrategy
+
+# 🟢 Отрезаем всё, начиная с первой "пробел-скобки" до конца строки
+META_TAG_PATTERN = re.compile(r'\s*\(.*$')
+
+class NGFWReportStrategy(BaseReportStrategy):
     """
     Стратегия для отчетов NGFW.
-    Наследует базовый парсинг логов (итерации, JMeter), но:
-    1. Ищет флаг Malware в pmi_session.log для каждого рана TRex.
-    2. Парсит счетчик Drops из L7-логов ASTF.
-    3. Применяет строгую бизнес-логику оценки (Drops = Fail для легитима, Drops = Pass для IPS).
+    Наследует I/O-операции базы. Поддерживает динамический рендер.
     """
 
     def parse_logs(self):
-        """Переопределяем: вызываем базовый парсер, затем добавляем специфику NGFW"""
         data = super().parse_logs()
 
         malware_logs = set()
         mult_map = {}
-        hc_list = [] # Список статусов Health Check
+        hc_list = []
 
         if os.path.exists(self.session_log_path):
             with open(self.session_log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
-                    # 1. Парсим параметры запуска TRex
                     if 'TRex command generated:' in line:
                         m_cmd = re.search(r'\.py\s+([\d\.]+)\s+\d+\s+([^\s{]+)', line)
                         if m_cmd:
@@ -35,25 +40,201 @@ class NGFWReportStrategy(DDoSReportStrategy):
                             mult_map[log_base + '.log'] = mult_val
                         if '"inject_malware": 1' in line and m_cmd:
                             malware_logs.add(log_base + '.log')
-                            
-                    # 2. Ловим результаты Health Check из лога
-                    elif 'Health Check Passed' in line:
-                        hc_list.append('🏥✅')
-                    elif 'Health Check Failed' in line or 'Health Check Error' in line:
-                        hc_list.append('🏥❌')
 
-        # 3. Раскидываем собранные флаги по акторам в итерациях
+                    elif 'Health Check Passed' in line:
+                        hc_list.append('<span title="CP & DP OK">✅ Pass</span>')
+                    elif 'Health Check Failed' in line or 'Health Check Error' in line:
+                        # Упал Ping/SSH (Control Plane)
+                        hc_list.append('<span title="Control Plane Dead" style="color:#c0392b; font-weight:bold;">❌ CP Fail</span>')
+                    elif 'FATAL:' in line and 'DUT is overwhelmed' in line:
+                        # Упал по дропам трафика (Data Plane)
+                        hc_list.append('<span title="Data Plane Overwhelmed" style="color:#e74c3c; font-weight:bold;">💀 DP Fatal</span>')
+
         for i, it in enumerate(data.get('iterations', [])):
-            # Если HC не запускался или лог оборвался, оставляем пустоту
             hc_icon = hc_list[i] if i < len(hc_list) else ''
-            
-            for a in it['actors']:
+            for a in it.get('actors', []):
                 a['is_ips'] = (a['log'] in malware_logs)
                 if a['log'] in mult_map:
                     a['mult'] = mult_map[a['log']]
-                a['hc_icon'] = hc_icon # Пробрасываем значок в статусы
+                a['hc_icon'] = hc_icon 
 
         return data
+
+    def _load_session_meta(self):
+        """
+        Ленивая загрузка иммутабельного контекста сессии (DTO).
+        Изолирует репортер от глобального стейта оркестратора.
+        """
+        if hasattr(self, 'session_meta'):
+            return self.session_meta
+
+        meta_path = os.path.join(self.logs_root, self.session_id, 'session_meta.json')
+        
+        # Fallback на случай запуска репортера для старых логов
+        self.session_meta = {
+            "description": "",
+            "dut_label": "Unknown DUT",
+            "dut_type": "Unknown",
+            "thresholds": {'warn': 0.05, 'fatal': 0.1}
+        }
+
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    loaded_meta = json.load(f)
+                    self.session_meta.update(loaded_meta)
+            except Exception as e:
+                Log.error(f"[{self.__class__.__name__}] Failed to parse session_meta.json: {e}")
+        else:
+            Log.warning(f"⚠️ [Tech Debt] session_meta.json not found at {meta_path}! Using failsafe defaults.")
+
+        return self.session_meta
+
+    def evaluate_metrics(self, data):
+        Log.info(f"[{self.__class__.__name__}] Evaluating metrics and copying artifacts...")
+        data['eval_meta'] = {'total_rps_accum': 0, 'valid_rps_count': 0, 'total_tests': 0}
+
+        for it in data.get('iterations', []):
+            for a in it.get('actors', []):
+                data['eval_meta']['total_tests'] += 1
+                
+                src_log = os.path.join(self.logs_root, self.session_id, a['log'])
+                dst_log = os.path.join(self.out_dir, a['log'])
+                if os.path.exists(src_log): 
+                    shutil.copy2(src_log, dst_log)
+                
+                if a['tool'] == 'JMETER':
+                    base = a['log'].replace('.log', '')
+                    for ext in ['.jtl', '_report']:
+                        src = os.path.join(self.logs_root, self.session_id, base + ext)
+                        dst = os.path.join(self.out_dir, base + ext)
+                        if os.path.exists(src):
+                            shutil.copy2(src, dst) if os.path.isfile(src) else shutil.copytree(src, dst, dirs_exist_ok=True)
+
+                stats = self._get_actor_stats_from_log(a['tool'], dst_log)
+                actual_rps = stats.get('rps', 0)
+                errors = stats.get('errors', 0)
+                total = stats.get('total', 0)
+                
+                eval_data = self._calculate_status(a, stats, actual_rps, errors, total)
+                a['eval'] = eval_data
+                a['stats'] = stats
+
+        return data
+
+    def _get_actor_stats_from_log(self, tool, log_path):
+        stats = {'rps': 0.0, 'errors': 0, 'total': 0, 'raw_summary': '-', 'rx_pps': 0.0, 'avg_rt': '-', 'max_rt': '-', 'astf_drops': 0, 'drop_pct': 0.0}
+        
+        if tool == 'TREX':
+            log_p = Path(log_path)
+            json_name = f"stats_{log_p.stem}.json"
+            
+            source_json = Path(self.logs_root) / self.session_id / json_name
+            target_json = Path(self.out_dir) / json_name
+
+            analyzer = TRexRunAnalyzer(str(source_json))
+            
+            if analyzer.is_valid:
+                try:
+                    if not target_json.exists():
+                        shutil.copy2(source_json, target_json)
+                except Exception as e:
+                    Log.warning(f"[{self.__class__.__name__}] Failed to copy JSON: {e}")
+
+                # 🟢 DATA-DRIVEN ФИКС: Читаем и легитимный, и вредоносный трафик раздельно
+                try:
+                    with open(target_json, 'r', encoding='utf-8') as f:
+                        jdata = json.load(f)
+                        tx_pkts_global = jdata.get('global', {}).get('tx_pkts', 0)
+                        
+                        if tx_pkts_global == 0 and 'traffic' in jdata:
+                            client = jdata.get('traffic', {}).get('client', {})
+                            tg_names = client.get('tg_names', {})
+                            
+                            # 1. Парсим легитимный трафик (для оценки стабильности DUT)
+                            if 'legit' in tg_names:
+                                lc = tg_names['legit'].get('client', {})
+                                tx_pkts = lc.get('tcps_connattempt', 0) + lc.get('udps_accepts', lc.get('udps_sndpkt', 0))
+                                astf_drops = (lc.get('tcps_drops', 0) + lc.get('tcps_conndrops', 0) + 
+                                              lc.get('tcps_timeoutdrop', 0) + lc.get('udps_keepdrops', 0))
+                            else:
+                                tx_pkts = client.get('tcps_connattempt', 0) + client.get('udps_accepts', client.get('udps_sndpkt', 0))
+                                astf_drops = client.get('tcps_drops', 0) + client.get('tcps_conndrops', 0) + client.get('udps_noportbcast', 0)
+
+                            stats['astf_drops'] = astf_drops
+                            stats['tx_pkts'] = tx_pkts
+                            if tx_pkts > 0:
+                                stats['drop_pct'] = (astf_drops / tx_pkts) * 100.0
+
+                            # 2. Парсим малварь (для оценки безопасности)
+                            if 'malware' in tg_names:
+                                mc = tg_names['malware'].get('client', {})
+                                ms = tg_names['malware'].get('server', {}) # 🟢 Читаем и сервер тоже!
+                                
+                                malware_tx_tcp = mc.get('tcps_connattempt', 0)
+                                malware_tx_udp = mc.get('udps_sndpkt', 0)
+                                stats['malware_tx'] = malware_tx_tcp + malware_tx_udp
+                                
+                                # 🟢 ИСТИННЫЙ ПОДСЧЕТ TCP DROPS
+                                # tcps_drops (сброс по таймауту) + tcps_testdrops (сброс по RST от фаервола)
+                                # tcps_timeoutdrop не берем, чтобы избежать двойного подсчета
+                                malware_drops_tcp = mc.get('tcps_drops', 0) + mc.get('tcps_testdrops', 0)
+                                
+                                # 🟢 ИСТИННЫЙ ПОДСЧЕТ UDP DROPS
+                                # То, что отправил клиент, минус то, что реально долетело до сервера
+                                malware_drops_udp = malware_tx_udp - ms.get('udps_rcvpkt', 0)
+                                
+                                stats['malware_drops'] = malware_drops_tcp + malware_drops_udp
+                            
+                            # 🟢 Извлекаем аппаратную задержку (Latency)
+                            lat_ms = 0.0
+                            if 'latency' in jdata:
+                                lat_sum = 0
+                                ports = 0
+                                for port_k, port_v in jdata['latency'].items():
+                                    if isinstance(port_v, dict) and 'hist' in port_v:
+                                        lat_sum += port_v['hist'].get('s_avg', 0)
+                                        ports += 1
+                                if ports > 0:
+                                    lat_ms = (lat_sum / ports) / 1000.0  # Конвертируем usec в ms
+                            stats['latency_ms'] = lat_ms
+                except Exception as e:
+                    Log.error(f"[{self.__class__.__name__}] Failed to parse exact TG drops from JSON: {e}")
+
+                kpi = analyzer.get_kpi_summary()
+                
+                raw_bps = kpi.get('max_tx_bps', 0)
+                stats['max_tx_bps_raw'] = raw_bps 
+                stats['max_tx_bw'] = f"{raw_bps / 1e9:.2f} Gbps" if raw_bps >= 1e9 else f"{raw_bps / 1e6:.2f} Mbps"
+                
+                # 🟢 Забираем метрику пакетов
+                stats['pps'] = kpi.get('max_tx_pps', 0)
+
+                stats['chart_data'] = analyzer.get_latency_series()
+                stats['latency_avg'] = kpi.get('avg_latency_ms', 0)
+                stats['jitter'] = kpi.get('jitter_usec', 0)
+            else:
+                Log.warning(f"[{self.__class__.__name__}] JSON artifact not found: {source_json}")
+                stats.update({'astf_drops': 0, 'drop_pct': 0.0, 'max_tx_bps_raw': 0, 'max_tx_bw': "0 bps", 'chart_data': {"x_usec": [], "y_count": []}})
+                
+        elif tool == 'JMETER':
+            if not os.path.exists(log_path): return stats
+            try:
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        if 'summary =' in line:
+                            parts = line.split('summary =')
+                            if len(parts) > 1:
+                                raw = "summary =" + parts[1]
+                                stats['raw_summary'] = raw
+                                m = re.search(r'=\s+(?P<rate>[\d\.]+)/s.*Avg:\s+(?P<avg>\d+).*Max:\s+(?P<max>\d+).*Err:\s+(?P<err>\d+)', raw)
+                                if m:
+                                    stats.update({'rps': float(m.group('rate')), 'avg_rt': m.group('avg'), 'max_rt': m.group('max'), 'errors': int(m.group('err'))})
+                                    try: stats['total'] = int(parts[1].strip().split()[0])
+                                    except: pass
+            except: pass
+            
+        return stats
 
     def _calculate_status(self, actor, stats, actual_rps, errors, total):
         ev = {'status_txt': 'UNKNOWN', 'status_cls': 'status-fail', 'err_style': 'color:#ccc;'}
@@ -72,11 +253,19 @@ class NGFWReportStrategy(DDoSReportStrategy):
             ev['display_name'] = f"<b>{p_name}</b>"
             ev['row_style'] = ""
 
-        thresholds = self.config.get('program', {}).get('dut', {}).get('thresholds', {})
-        warn_limit = thresholds.get('warn', 10)
-        fatal_limit = thresholds.get('fatal', 50)
+        # 🟢 DATA-DRIVEN: Читаем замороженные лимиты сессии
+        meta = self._load_session_meta()
+        thresholds = meta.get('thresholds', {})
+        warn_limit = float(thresholds.get('warn', 0.05))
+        fatal_limit = float(thresholds.get('fatal', 0.1))
         
         ev['hc_icon'] = actor.get('hc_icon', '-')
+
+        # 🟢 ФИКС: Динамическое форматирование сверхмалых процентов
+        def format_pct(pct):
+            if pct > 0 and pct < 0.01:
+                return f"{pct:.4f}"
+            return f"{pct:.2f}"
 
         if actor['tool'] == 'JMETER':
             ev['load_config'] = f"<b>JMETER</b>: {actor['load']} RPS"
@@ -94,27 +283,51 @@ class NGFWReportStrategy(DDoSReportStrategy):
 
         elif actor['tool'] == 'TREX':
             mult = actor.get('mult', '?')
-            ev['load_config'] = f"<b>TREX</b>: {mult}x 1000 cps" # <-- Исправили название
+            ev['load_config'] = f"<b>TREX</b>: {mult}x 1000 cps" 
             
             tx_bw = stats.get('max_tx_bw', '0 bps')
             drops = stats.get('astf_drops', 0)
+            drop_pct = stats.get('drop_pct', 0.0)
+            malware_drops = stats.get('malware_drops', 0)
+            malware_tx = stats.get('malware_tx', 0)
             
             ev['rps_display'] = f"Max TX: {tx_bw}"
-            ev['err_display'] = f"Drops: {drops}" # <-- Убрали дублирование порогов
+            
+            # Проброс задержки в интерфейс
+            lat_ms = stats.get('latency_ms', 0.0)
+            ev['response_time'] = f"{lat_ms:.2f} ms" if lat_ms > 0 else "N/A"
 
             if is_ips:
-                if drops > 0:
-                    ev['status_txt'], ev['status_cls'] = "SECURED", "status-blocked"
-                    ev['err_style'] = "color:#2980b9; font-weight:bold;"
+                malware_pct = (malware_drops / malware_tx * 100.0) if malware_tx > 0 else 0.0
+                
+                ev['err_display'] = (
+                    f"Legit Drops: <b>{drops}</b> ({format_pct(drop_pct)}%)<br><br>"
+                    f"<span style='color:#8e44ad; font-size:0.95em; font-weight:bold;'>"
+                    f"Malware Blocked: {malware_drops} ({malware_pct:.1f}%)</span>"
+                )
+
+                # Строгая Data-Plane логика (игнорируем Control Plane, как в sc_logic.py)
+                if drop_pct >= fatal_limit:
+                    ev['status_txt'], ev['status_cls'] = "DoS", "status-fail"
+                    ev['err_style'] = "color:#e74c3c; font-weight:bold;"
+                elif drop_pct >= warn_limit:
+                    ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
+                    ev['err_style'] = "color:#f39c12; font-weight:bold;"
                 else:
-                    ev['status_txt'], ev['status_cls'] = "BYPASSED", "status-fail"
-                    ev['err_style'] = "color:#e74c3c; font-weight:bold;"
+                    if malware_drops > 0:
+                        ev['status_txt'], ev['status_cls'] = "SECURED", "status-blocked"
+                        ev['err_style'] = "color:#2980b9; font-weight:bold;"
+                    else:
+                        ev['status_txt'], ev['status_cls'] = "BYPASSED", "status-fail"
+                        ev['err_style'] = "color:#e74c3c; font-weight:bold;"
             else:
-                if drops >= fatal_limit:
-                    ev['status_txt'], ev['status_cls'] = "FAIL", "status-fail"
+                ev['err_display'] = f"Drops: {drops} ({format_pct(drop_pct)}%)" 
+                
+                if drop_pct >= fatal_limit:
+                    ev['status_txt'], ev['status_cls'] = "DoS", "status-fail"
                     ev['err_style'] = "color:#e74c3c; font-weight:bold;"
-                elif drops >= warn_limit:
-                    ev['status_txt'], ev['status_cls'] = "WARN", "status-warning"
+                elif drop_pct >= warn_limit:
+                    ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
                     ev['err_style'] = "color:#f39c12; font-weight:bold;"
                 else:
                     ev['status_txt'], ev['status_cls'] = "PASS", "status-pass"
@@ -122,123 +335,260 @@ class NGFWReportStrategy(DDoSReportStrategy):
                 
         return ev
 
-    def _format_session_label(self, raw_label, session_data):
-        """
-        Переопределенный парсер заголовков для формата NGFW.
-        Ожидает: North-South Degradation Matrix [CAP3_PD1_NS] (Perimeter Mix) (Medium Load ~5,2 Gbps (Mult 30 x 1000 cps))
-        """
-        import re
-        
-        # 1. Ищем блок нагрузки с конца строки
-        m_params = re.search(r'\((Low|Medium|High).*?\)$', raw_label, re.IGNORECASE)
-        
-        if m_params:
-            load_block = m_params.group(0) 
-            title_part = raw_label[:m_params.start()].strip()
-            final_subtitle = load_block[1:-1] # Убираем крайние скобки
-        else:
-            title_part = raw_label
-            final_subtitle = ""
-
-        # 2. Извлекаем тег [CAP3_PD1_NS]
-        m_tag = re.search(r'\[(.*?)\]', title_part)
-        tag = f"[{m_tag.group(1)}]" if m_tag else ""
-        title_part = title_part.replace(m_tag.group(0), '') if m_tag else title_part
-
-        # 3. Извлекаем (Perimeter Mix)
-        m_desc = re.search(r'\((.*?)\)', title_part)
-        desc = f"({m_desc.group(1)})" if m_desc else ""
-        title_part = title_part.replace(m_desc.group(0), '') if m_desc else title_part
-
-        # 4. Чистим мусор
-        clean_title = re.sub(r'^\+\s*|\s*\+$', '', re.sub(r'\s+', ' ', title_part).strip()).strip()
-        final_label = f"{tag} {desc}".strip() or clean_title
-
-        # 5. Склеиваем подзаголовок
-        if final_subtitle:
-            # Для гибридных тестов подставляем RPS из JMeter
-            if "RPS" not in final_subtitle and session_data:
-                try:
-                    jmeter_load = next((a['load'] for it in session_data.get('iterations', []) for a in it['actors'] if a['tool'] == 'JMETER' and a.get('load') and a['load'] != '?'), None)
-                    if jmeter_load:
-                        if re.match(r'^\d+m:', final_subtitle):
-                            final_subtitle = re.sub(r'^(\d+m:)\s*', fr'\1 {jmeter_load} RPS Base, ', final_subtitle)
-                        else:
-                            final_subtitle = f"{jmeter_load} RPS Base, {final_subtitle}"
-                except Exception:
-                    pass
-
-            if final_label != clean_title:
-                final_subtitle = f"{clean_title} | {final_subtitle}"
-        else:
-            final_subtitle = "" if final_label == clean_title else clean_title
-
-        return final_label, final_subtitle
-
-    def _get_actor_stats_from_log(self, tool, log_path):
-        stats = super()._get_actor_stats_from_log(tool, log_path)
-
-        if tool == 'TREX' and os.path.exists(log_path):
-            stats['astf_drops'] = 0
-            stats['max_tx_bw'] = "0 bps"
-            max_raw_bps = 0.0 # <-- ПЕРЕМЕННАЯ ДЛЯ ЧЕСТНОГО СРАВНЕНИЯ
-
-            # Конвертер единиц измерения
-            unit_mult = {'Gbps': 1e9, 'Mbps': 1e6, 'Kbps': 1e3, 'bps': 1}
-
-            try:
-                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    for line in f:
-                        if 'ASTF' in line:
-                            if 'Drops:' in line:
-                                m_drops = re.search(r'Drops:\s+(\d+)', line)
-                                if m_drops and int(m_drops.group(1)) > stats['astf_drops']:
-                                    stats['astf_drops'] = int(m_drops.group(1))
-                            
-                            # Ловим максимальную полосу
-                            m_tx = re.search(r'TX:\s+([\d\.]+)([KMG]?bps)', line)
-                            if m_tx:
-                                val = float(m_tx.group(1))
-                                unit = m_tx.group(2)
-                                current_bps = val * unit_mult.get(unit, 1)
-                                
-                                # Сохраняем только если текущее значение больше максимального
-                                if current_bps > max_raw_bps:
-                                    max_raw_bps = current_bps
-                                    stats['max_tx_bw'] = f"{val} {unit}"
-            except Exception as e:
-                Log.error(f"[NGFW Strategy] Error parsing ASTF log: {e}")
-                
-        return stats
     def render_html(self, data):
-        """Полностью переопределенный рендер отчета для NGFW"""
-        import os
-        import shutil
-        from datetime import datetime
-        from reporting.html_templates import NGFW_SESSION_REPORT_TEMPLATE
+        Log.info(f"[{self.__class__.__name__}] Generating HTML with Dynamic Data-Driven Template...")
         
-        Log.info(f"[{self.__class__.__name__}] Generating HTML with custom NGFW template...")
+        # 🟢 АРХИТЕКТУРНЫЙ ФИКС: Поднимаем контекст (Hoisting) в начало области видимости
+        # 1. Извлекаем сырые тайтлы (нужны для определения типа теста)
+        base_title, base_subtitle = self._format_session_label(data.get('label', ''), data)
         
+        # 2. Определяем Data-Driven стратегию рендера
+        is_cc_test = '[SYN6' in str(base_title)
+        is_cps_test = ('[SYN' in str(base_title) or '[RS' in str(base_title)) and not is_cc_test
+        primary_metric_label = "Max Concurrent Connections" if is_cc_test else "Peak Connection Rate" if is_cps_test else "Peak Throughput"
+
         overview_rows = ""
         artifacts_section_html = ""
+        unified_chart_html = ""
         
-        for it in data['iterations']:
+        behavior = data.get('behavior', 'single')
+        if len(data.get('iterations', [])) <= 1:
+            behavior = 'single'
+
+        peak_val = 0
+        session_has_dos = False 
+
+        # 3. Вычисляем глобальный Peak для шапки
+        for it in data.get('iterations', []):
+            for a in it.get('actors', []):
+                if a['tool'] == 'TREX':
+                    if is_cps_test or is_cc_test:
+                        try:
+                            val = float(a.get('mult', 0)) * 1000
+                        except ValueError:
+                            val = 0
+                    else:
+                        val = a.get('stats', {}).get('max_tx_bps_raw', 0)
+                        
+                    if val > peak_val: 
+                        peak_val = val
+                        
+                status = a.get('eval', {}).get('status_txt', '')
+                if status in ['DoS', 'FATAL', 'FAIL']:
+                    session_has_dos = True
+
+        if is_cps_test:
+            peak_str = f"{peak_val:,.0f} CPS".replace(',', ' ')
+        elif is_cc_test:
+            peak_str = f"{peak_val:,.0f} CC".replace(',', ' ')
+        else:
+            peak_str = f"{peak_val/1e9:.2f} Gbps" if peak_val >= 1e9 else f"{peak_val/1e6:.2f} Mbps" if peak_val >= 1e6 else f"{peak_val/1e3:.2f} Kbps" if peak_val >= 1e3 else "0 bps"
+
+        peak_color = "#333333"
+        peak_html = f'<span style="color: {peak_color}; font-weight: 800;">{peak_str}</span>'
+
+        if behavior == 'stepper':
+            trend_x_target, trend_y_main, trend_y_drops = [], [], []
+            
+            # 🟢 DATA-DRIVEN: Динамические лейблы осей и графиков в зависимости от теста
+            if is_cps_test:
+                chart_title = "📈 График деградации (Connection Rate)"
+                y1_name, y1_series = "CPS", "Achieved CPS"
+            elif is_cc_test:
+                chart_title = "📈 График деградации (Concurrent Connections)"
+                y1_name, y1_series = "CC", "Active Conns"
+            else:
+                chart_title = "📈 График деградации пропускной способности (Knee Curve)"
+                y1_name, y1_series = "Mbps", "Throughput (Mbps)"
+
+            for it in data.get('iterations', []):
+                # Безопасно достаем длительность итерации (по дефолту 60s, если не указано)
+                duration = int(it.get('duration', 60)) 
+                
+                for a in it.get('actors', []):
+                    if a['tool'] == 'TREX':
+                        st = a.get('stats', {})
+                        mult = float(a.get('mult', 0)) if str(a.get('mult', '')).replace('.', '').isdigit() else 0
+                        
+                        # 1. Ось X (Целевая нагрузка)
+                        if is_cps_test or is_cc_test:
+                            target_load = int(mult * 1000)
+                            trend_x_target.append(f"{target_load} {y1_name}")
+                        else:
+                            # Для обычных тестов пропускной способности mult - это просто множитель профиля
+                            target_load = mult
+                            trend_x_target.append(f"Mult {target_load}x")
+                        
+                        # 2. Дропы (всегда одинаково)
+                        drops = st.get('astf_drops', 0)
+                        trend_y_drops.append(drops)
+
+                        # 3. 🟢 ВЫСЧИТЫВАЕМ ДОСТИГНУТУЮ НАГРУЗКУ ДЛЯ ОСИ Y (Секретный соус)
+                        if is_cps_test:
+                            # Реальный успешный CPS = (Попытки - Дропы) / Время
+                            tx_conns = st.get('tx_pkts', 0)
+                            achieved_val = round(max(0, tx_conns - drops) / duration) if duration > 0 else 0
+                        elif is_cc_test:
+                            # Аппроксимация CC (в идеале тянуть active_flows, но пока вычитаем дропы)
+                            achieved_val = max(0, target_load - drops)
+                        else:
+                            # Классические Mbps для CAP-тестов (L2/L3 пропускная способность)
+                            achieved_val = round(st.get('max_tx_bps_raw', 0) / 1e6, 2)
+                            
+                        trend_y_main.append(achieved_val)
+
+            if trend_x_target:
+                max_y_idx = trend_y_main.index(max(trend_y_main)) if trend_y_main else 0
+                knee_x = trend_x_target[max_y_idx] if trend_y_main else ""
+                
+                # Форматируем пиковое значение для всплывающей подсказки (с пробелами для тысяч)
+                if is_cps_test or is_cc_test:
+                    peak_val_str = f"{max(trend_y_main):,.0f}".replace(',', ' ')
+                else:
+                    peak_val_str = f"{max(trend_y_main)}"
+                
+                unified_chart_html = """
+                <div class="iter-card" style="border-top: 3px solid #3498db; box-shadow: 0 4px 10px rgba(52, 152, 219, 0.1);">
+                    <div class="iter-header" style="background: #ebf5fb;"><span class="iter-title" style="color: #2980b9;">%(chart_title)s</span></div>
+                    <div class="iter-body">
+                        <div id="stepper-chart" style="width: 100%%; height: 350px;"></div>
+                        <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+                        <script>
+                            document.addEventListener("DOMContentLoaded", function() {
+                                var chartElem = document.getElementById('stepper-chart');
+                                if(chartElem) {
+                                    echarts.init(chartElem).setOption({
+                                        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                                        legend: { data: ['%(y1_series)s', 'Packet Drops'], bottom: 0 },
+                                        grid: { top: 30, left: 60, right: 60, bottom: 40 },
+                                        xAxis: { type: 'category', data: %(x_data)s, axisLine: { lineStyle: { color: '#bdc3c7' } } },
+                                        yAxis: [
+                                            { type: 'value', name: '%(y1_name)s', position: 'left', axisLabel: { color: '#2980b9' }, splitLine: { lineStyle: { type: 'dashed', color: '#ecf0f1' } } },
+                                            { type: 'value', name: 'Drops', position: 'right', axisLabel: { color: '#e74c3c' }, splitLine: { show: false } }
+                                        ],
+                                        series: [
+                                            { name: '%(y1_series)s', type: 'line', smooth: true, itemStyle: { color: '#2980b9' }, lineStyle: { width: 3 }, areaStyle: { opacity: 0.1 }, data: %(y_main)s,
+                                              markLine: { silent: true, symbol: ['none', 'none'], label: { formatter: 'Knee Point\\n{c} %(y1_name)s', position: 'insideEndTop', color: '#e74c3c', padding: [4, 8], backgroundColor: 'rgba(255,255,255,0.85)', borderRadius: 4, borderWidth: 1, borderColor: '#e74c3c' }, lineStyle: { color: '#e74c3c', type: 'dashed', width: 2 }, data: [{ xAxis: '%(knee_x)s', name: '%(peak_val)s' }] }
+                                            },
+                                            { name: 'Packet Drops', type: 'line', yAxisIndex: 1, smooth: true, itemStyle: { color: '#e74c3c' }, lineStyle: { type: 'dashed', width: 2 }, data: %(y_drops)s }
+                                        ]
+                                    });
+                                }
+                            });
+                        </script>
+                    </div>
+                </div>
+                """ % { 
+                    'chart_title': chart_title, 'y1_name': y1_name, 'y1_series': y1_series,
+                    'x_data': json.dumps(trend_x_target), 'y_main': json.dumps(trend_y_main), 
+                    'y_drops': json.dumps(trend_y_drops), 'knee_x': knee_x, 'peak_val': peak_val_str 
+                }
+
+        elif behavior == 'binary':
+            max_pass_val, max_tx_pps, max_pass_bps = 0, 0, 0
+            max_pass_mult = "N/A"
+            
+            for it in data.get('iterations', []):
+                for a in it.get('actors', []):
+                    if a['tool'] == 'TREX' and a.get('eval', {}).get('status_txt') in ['PASS', 'SECURED']:
+                        
+                        val = float(a.get('mult', 0)) * 1000 if (is_cps_test or is_cc_test) else a.get('stats', {}).get('max_tx_bps_raw', 0)
+                        
+                        if val >= max_pass_val:
+                            max_pass_val = val
+                            max_pass_mult = str(a.get('mult', '?'))
+                            max_tx_pps = a.get('stats', {}).get('pps', 0)
+                            max_pass_bps = a.get('stats', {}).get('max_tx_bps_raw', 0)
+
+            # Каскад рендеринга текста сертификата
+            if is_cps_test:
+                ndr_title = "Max Stable Connection Rate"
+                ndr_primary = f"{max_pass_val:,.0f} CPS".replace(',', ' ')
+                ndr_secondary = f"{max_pass_bps/1e6:.2f} Mbps | {max_tx_pps/1e3:.2f} Kpps"
+            elif is_cc_test:
+                ndr_title = "Max Concurrent Connections"
+                ndr_primary = f"{max_pass_val:,.0f} CC".replace(',', ' ')
+                ndr_secondary = f"{max_pass_bps/1e6:.2f} Mbps | {max_tx_pps/1e3:.2f} Kpps"
+            else:
+                ndr_title = "Validated Non-Drop Rate (NDR)"
+                ndr_primary = f"{max_pass_val/1e9:.2f} Gbps" if max_pass_val >= 1e9 else f"{max_pass_val/1e6:.2f} Mbps" if max_pass_val >= 1e6 else "0 bps"
+                ndr_secondary = f"{max_tx_pps/1e6:.2f} Mpps" if max_tx_pps >= 1e6 else f"{max_tx_pps/1e3:.2f} Kpps" if max_tx_pps >= 1e3 else "0 pps"
+            
+            unified_chart_html = f"""
+            <div class="iter-card" style="border-top: 4px solid #27ae60; box-shadow: 0 4px 15px rgba(39, 174, 96, 0.1);">
+                <div class="iter-header" style="background: #eafaf1; display:flex; justify-content:space-between; align-items:center;">
+                    <span class="iter-title" style="color: #27ae60; font-size: 18px;">🏆 Certificate of Performance</span>
+                    <span style="font-family:monospace; color:#7f8c8d; font-size: 12px;">RFC 2544 / Binary Search</span>
+                </div>
+                <div class="iter-body" style="text-align: center; padding: 40px 20px;">
+                    <div style="font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 10px;">{ndr_title}</div>
+                    <div style="font-size: 48px; font-weight: 800; color: #2c3e50; margin-bottom: 5px;">{ndr_primary}</div>
+                    <div style="font-size: 18px; color: #7f8c8d; margin-bottom: 20px;">{ndr_secondary}</div>
+                    <div style="font-size: 16px; color: #27ae60; font-family: monospace; background: #fff; display: inline-block; padding: 8px 16px; border-radius: 6px; border: 1px solid #27ae60;">
+                        Profile Multiplier: {max_pass_mult}x
+                    </div>
+                </div>
+            </div>
+            """
+        elif behavior == 'matrix':
+            # 🟢 DATA-DRIVEN: Рендер для статической нагрузки и изменения состояния DUT
+            matrix_x_iters, matrix_y_bps, matrix_y_drops = [], [], []
+            for it in data.get('iterations', []):
+                # Находим главного актора (TRex) в итерации
+                trex_actor = next((a for a in it.get('actors', []) if a['tool'] == 'TREX'), None)
+                if trex_actor:
+                    matrix_x_iters.append(f"Config {it['id']}")
+                    matrix_y_bps.append(round(trex_actor.get('stats', {}).get('max_tx_bps_raw', 0) / 1e6, 2))
+                    matrix_y_drops.append(trex_actor.get('stats', {}).get('astf_drops', 0))
+
+            if matrix_x_iters:
+                unified_chart_html = """
+                <div class="iter-card" style="border-top: 3px solid #8e44ad; box-shadow: 0 4px 10px rgba(142, 68, 173, 0.1);">
+                    <div class="iter-header" style="background: #f4ecf8;"><span class="iter-title" style="color: #8e44ad;">📊 Матрица деградации DUT (Constant Load)</span></div>
+                    <div class="iter-body">
+                        <div id="matrix-chart" style="width: 100%%; height: 350px;"></div>
+                        <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+                        <script>
+                            document.addEventListener("DOMContentLoaded", function() {
+                                var chartElem = document.getElementById('matrix-chart');
+                                if(chartElem) {
+                                    echarts.init(chartElem).setOption({
+                                        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                                        legend: { data: ['Throughput (Mbps)', 'Packet Drops'], bottom: 0 },
+                                        grid: { top: 30, left: 60, right: 60, bottom: 40 },
+                                        xAxis: { type: 'category', data: %(x_data)s, axisTick: { alignWithLabel: true }, axisLine: { lineStyle: { color: '#bdc3c7' } } },
+                                        yAxis: [
+                                            { type: 'value', name: 'Mbps', position: 'left', axisLabel: { color: '#8e44ad' }, splitLine: { lineStyle: { type: 'dashed', color: '#ecf0f1' } } },
+                                            { type: 'value', name: 'Drops', position: 'right', axisLabel: { color: '#e74c3c' }, splitLine: { show: false } }
+                                        ],
+                                        series: [
+                                            { name: 'Throughput (Mbps)', type: 'bar', barMaxWidth: 50, itemStyle: { color: '#8e44ad', borderRadius: [4, 4, 0, 0] }, data: %(y_bps)s },
+                                            { name: 'Packet Drops', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 8, itemStyle: { color: '#e74c3c' }, lineStyle: { width: 3 }, data: %(y_drops)s }
+                                        ]
+                                    });
+                                }
+                            });
+                        </script>
+                    </div>
+                </div>
+                """ % { 'x_data': json.dumps(matrix_x_iters), 'y_bps': json.dumps(matrix_y_bps), 'y_drops': json.dumps(matrix_y_drops) }
+
+        for idx, it in enumerate(data.get('iterations', [])):
             iter_artifacts_inner = ""
-            for a in it['actors']:
+            for a in it.get('actors', []):
                 ev = a.get('eval', {})
                 st = a.get('stats', {})
                 
-                rt_display = "-"
+                # 🟢 Берем готовое значение из ev
+                rt_display = ev.get('response_time', '-')
+                
                 if a['tool'] == 'JMETER' and st.get('avg_rt') != '-':
                     rt_display = f"{st['avg_rt']} ms<br><span style='font-size:0.85em; color:#888;'>(Max: {st['max_rt']})</span>"
-                elif a['tool'] == 'TREX': 
-                    rt_display = "<span style='color:#555;'>N/A</span>"
 
-                # Генерируем строку таблицы (ДОБАВЛЕНА КОЛОНКА HEALTH)
                 overview_rows += f"""
                 <tr {ev.get('row_style', '')}>
                     <td>{ev.get('display_name', '')}</td>
-                    <td>{a.get('start', it['start'])}</td>
+                    <td>{a.get('start', it.get('start', ''))}</td>
                     <td>{it.get('duration', '?')}s</td>
                     <td>{ev.get('load_config', '')}</td>
                     <td>{ev.get('rps_display', '')}</td>
@@ -249,20 +599,49 @@ class NGFWReportStrategy(DDoSReportStrategy):
                 </tr>
                 """
                 
-                # Кнопки артефактов
                 btns = "".join([f'<a href="{art["link"]}" class="btn {art.get("style", "btn")}" target="_blank">{art["name"]}</a> ' for art in a.get('artifacts', [])])
+                if a['tool'] == 'TREX':
+                    btns += f'<a href="stats_{a["log"].replace(".log", ".json")}" class="btn btn-console" target="_blank" style="background: #f39c12; color: #fff; border-color: #e67e22;">JSON Stats</a> '
+                
                 iter_artifacts_inner += f"""
                 <div style="margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:10px;">
                     <div style="font-weight:bold; color:#555; margin-bottom:5px; font-size:13px;">
                         <span style="color:#2980b9;">{a['tool']}</span> - {a['log']}
                     </div>
                     <div style="display:flex; gap:10px;">{btns}</div>
-                </div>
                 """
-                
+
+                if behavior == 'single' and a['tool'] == 'TREX' and st.get('chart_data') and st['chart_data'].get('x_usec'):
+                    chart_id = f"chart-{it['id']}-{a['log'].replace('.log', '')}"
+                    iter_artifacts_inner += f"""
+                        <div style="margin-top: 15px; border: 1px solid #e0e0e0; background: #ffffff; padding: 15px; border-radius: 4px;">
+                            <div style="display: flex; gap: 20px; font-family: monospace; margin-bottom: 5px; font-size: 13px; color: #2c3e50;">
+                                <div>AVG LATENCY: <strong>{st.get('latency_avg', 0)} ms</strong></div>
+                                <div>JITTER: <strong>{st.get('jitter', 0)} µs</strong></div>
+                                <div>TOTAL DROPS: <strong style="color: #e74c3c;">{st.get('astf_drops', 0)}</strong></div>
+                            </div>
+                            <div id="{chart_id}" style="width: 100%%; height: 280px;"></div>
+                            <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+                            <script>
+                                document.addEventListener("DOMContentLoaded", function() {{
+                                    var chartElem = document.getElementById('{chart_id}');
+                                    if(chartElem) {{
+                                        echarts.init(chartElem).setOption({{
+                                            tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'shadow' }} }},
+                                            grid: {{ top: 40, bottom: 60, left: 60, right: 30 }},
+                                            dataZoom: [ {{ type: 'inside' }}, {{ type: 'slider', bottom: 10, height: 20 }} ],
+                                            xAxis: {{ type: 'category', data: {json.dumps(st['chart_data']['x_usec'])}, name: 'Задержка', axisLabel: {{ color: '#7f8c8d', rotate: 45, formatter: function (v) {{ return (parseInt(v) / 1000).toFixed(1) + ' ms'; }} }}, axisLine: {{ lineStyle: {{ color: '#bdc3c7' }} }} }},
+                                            yAxis: {{ type: 'log', name: 'Пакеты (Log)', min: 1, splitLine: {{ lineStyle: {{ type: 'dashed', color: '#ecf0f1' }} }}, axisLabel: {{ color: '#7f8c8d' }} }},
+                                            series: [{{ data: {json.dumps(st['chart_data']['y_count'])}, type: 'bar', itemStyle: {{ color: '#34495e' }}, barMaxWidth: 30, markLine: {{ silent: true, lineStyle: {{ color: '#e74c3c', type: 'dashed', width: 2 }}, label: {{ formatter: 'SLA (5ms)', position: 'insideEndTop' }}, data: [{{ xAxis: '5000' }}] }} }}]
+                                        }});
+                                    }}
+                                }});
+                            </script>
+                        </div>
+                    """
+                iter_artifacts_inner += "</div>"
             artifacts_section_html += f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Iteration #{it["id"]} Artifacts</span></div><div class="iter-body">{iter_artifacts_inner}</div></div>'
 
-        # Target Metrics Chart
         target_health_html = ""
         src_csv = os.path.join(self.logs_root, self.session_id, "target_metrics.csv")
         if os.path.exists(src_csv):
@@ -272,48 +651,56 @@ class NGFWReportStrategy(DDoSReportStrategy):
                 target_health_html = build_target_chart_html(os.path.join(self.out_dir, "target_metrics.csv"))
             except ImportError: pass
 
-        # Очистка сессионного лога
         cleaned_log = self._read_and_clean_session_log(self.session_log_path)
         log_section_html = f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Full Session Log</span></div><div class="iter-body" style="padding:0;"><pre class="log-view">{cleaned_log}</pre></div></div>'
 
-        # Итоговые цифры
-        meta = data['eval_meta']
-        # --- ВЫЧИСЛЕНИЕ ПИКОВОЙ ПРОПУСКНОЙ СПОСОБНОСТИ ---
-        peak_bps = 0.0
-        unit_mult = {'Gbps': 1e9, 'Mbps': 1e6, 'Kbps': 1e3, 'bps': 1}
-        
-        for it in data.get('iterations', []):
-            for a in it['actors']:
-                if a['tool'] == 'TREX':
-                    bw_str = a.get('stats', {}).get('max_tx_bw', '0 bps')
-                    m_bw = re.match(r'([\d\.]+)\s+([KMG]?bps)', bw_str)
-                    if m_bw:
-                        val = float(m_bw.group(1)) * unit_mult.get(m_bw.group(2), 1)
-                        if val > peak_bps:
-                            peak_bps = val
-                            
-        if peak_bps >= 1e9: peak_str = f"{peak_bps/1e9:.1f} Gbps"
-        elif peak_bps >= 1e6: peak_str = f"{peak_bps/1e6:.1f} Mbps"
-        elif peak_bps >= 1e3: peak_str = f"{peak_bps/1e3:.1f} Kbps"
-        else: peak_str = "N/A"
-
-        # Достаем пороги для шапки
-        thresholds = self.config.get('program', {}).get('dut', {}).get('thresholds', {})
-        warn_limit = thresholds.get('warn', 10)
-        fatal_limit = thresholds.get('fatal', 50)
+        meta = self._load_session_meta()
+        thresholds = meta.get('thresholds', {})
+        warn_val = float(thresholds.get('warn', 0.05))
+        fatal_val = float(thresholds.get('fatal', 0.1))
 
         total_duration_str = "~"
-        try: total_duration_str = str(datetime.strptime(data['end'], "%H:%M:%S") - datetime.strptime(data['start'], "%H:%M:%S"))
-        except: pass
+        try: 
+            total_duration_str = str(datetime.strptime(data['end'], "%H:%M:%S") - datetime.strptime(data['start'], "%H:%M:%S"))
+        except Exception: 
+            pass
+        
+        # 🟢 ЗДЕСЬ МЫ БОЛЬШЕ НИЧЕГО НЕ ВЫЧИСЛЯЕМ (Всё уже сделано наверху)
+        # 2. Безопасно извлекаем DTO
+        dut_label = meta.get('dut_label')
+        description = meta.get('description')
 
-        fancy_title, fancy_subtitle = self._format_session_label(data['label'], data)
+        # 3. Умный рендер: комбинируем данные, если они есть
+        clean_title = META_TAG_PATTERN.sub('', str(base_title)).strip()
+        clean_subtitle = META_TAG_PATTERN.sub('', str(base_subtitle)).strip()
+
+        if dut_label and dut_label != "Unknown DUT":
+            fancy_title = f"{dut_label} <span style='font-size:0.75em; color:#7f8c8d; font-weight:normal;'>| {clean_subtitle}</span>"
+        else:
+            fancy_title = clean_title
+
+        # Формируем подзаголовок (Имя сценария + Описание из манифеста)
+        if description:
+            # Реально используем description!
+            fancy_subtitle = f"{clean_title}<br><span style='font-size:0.95em; color:#7f8c8d; margin-top:5px; display:inline-block;'>{description}</span>"
+        else:
+            fancy_subtitle = clean_title
 
         return NGFW_SESSION_REPORT_TEMPLATE.format(
-            session_id=self.session_id, label=fancy_title, subtitle=fancy_subtitle,
-            start_time=data['start'], total_duration=total_duration_str,
-            run_count=len(data['iterations']), total_tests=data['eval_meta']['total_tests'],
-            peak_bw=peak_str, warn_limit=warn_limit, fatal_limit=fatal_limit, # <-- Передаем новые переменные
+            session_id=self.session_id, 
+            label=fancy_title, 
+            subtitle=fancy_subtitle,
+            start_time=data['start'], 
+            total_duration=total_duration_str,
+            run_count=len(data.get('iterations', [])), 
+            total_tests=data.get('eval_meta', {}).get('total_tests', 0),
+            peak_label=primary_metric_label,  # 🟢 Наш динамический заголовок с самого верха
+            peak_bw=peak_html,                # 🟢 Передаем ТОЛЬКО ОДИН РАЗ
+            warn_limit=warn_val, 
+            fatal_limit=fatal_val,
             overview_rows=overview_rows,
-            artifacts_section=artifacts_section_html, target_health_section=target_health_html,
-            log_section=log_section_html, gen_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            artifacts_section=unified_chart_html + artifacts_section_html, 
+            target_health_section=target_health_html,
+            log_section=log_section_html, 
+            gen_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )

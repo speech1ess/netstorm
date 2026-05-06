@@ -174,5 +174,36 @@
             </div>
         </div>
     </div>
+    <!-- 🚨 Модалка предупреждения о вредоносном трафике (Malware Overlay) -->
+    <div id="malware-overlay-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-sm">
+        <div class="bg-[#0a0a0a] border border-red-500/50 rounded-lg p-6 w-[500px] shadow-[0_0_40px_rgba(239,68,68,0.2)] transform transition-all flex flex-col">
+            <h3 class="text-white text-[14px] font-bold mb-4 border-b border-red-900/50 pb-3 flex items-center gap-2 uppercase tracking-wider">
+                <span class="text-red-500 text-xl">🚨</span> ВНИМАНИЕ: ОПАСНАЯ НАГРУЗКА
+            </h3>
+            
+            <div class="text-zinc-300 text-[12px] leading-relaxed">
+                <p id="malware-overlay-msg" class="bg-red-950/20 p-4 rounded border border-red-900/30 text-red-200 font-mono">
+                    Выбран профиль на базе PCAP или тест матрицы деградации.
+                </p>
+            </div>
+
+            <!-- 🎯 ЧЕКБОКС ИНЪЕКЦИИ МАЛЬВАРИ -->
+            <div class="mt-4 mb-6 bg-black p-3 rounded border border-red-900/50 flex items-center shrink-0 hover:bg-red-950/20 transition-colors cursor-pointer" onclick="document.getElementById('malware-inject-checkbox').click()">
+                <input type="checkbox" id="malware-inject-checkbox" class="w-5 h-5 text-red-500 bg-black border-red-800 rounded focus:ring-red-500 focus:ring-2 cursor-pointer pointer-events-none">
+                <label for="malware-inject-checkbox" class="ml-3 text-[11px] font-bold text-red-400 uppercase tracking-wider cursor-pointer pointer-events-none">
+                    ☣️ Активировать Malware Overlay (IPS)
+                </label>
+            </div>
+
+            <div class="flex justify-end gap-3 shrink-0">
+                <button id="malware-overlay-cancel-btn" class="px-4 py-2 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-white transition text-[10px] font-bold uppercase tracking-wider">
+                    Отмена
+                </button>
+                <button id="malware-overlay-confirm-btn" class="px-4 py-2 rounded bg-red-900/30 border border-red-500 text-red-400 hover:bg-red-500 hover:text-white transition text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 shadow-[0_0_10px_rgba(239,68,68,0.2)]">
+                    🚀 ЗАПУСК
+                </button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

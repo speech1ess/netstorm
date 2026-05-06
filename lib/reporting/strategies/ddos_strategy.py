@@ -5,128 +5,16 @@ import os
 import re
 import shutil
 from datetime import datetime
-
-# Импортируем базу и логирование
 from pmi_logger import Log
 from reporting.html_templates import SESSION_REPORT_TEMPLATE
-from .base import BaseReportStrategy
-
-# ─────────────────────────────────────────────────────────────
-# REGEX PATTERNS 
-# ─────────────────────────────────────────────────────────────
-RE_SESSION_START = re.compile(r'(?:\[?(?P<time>\d{2}:\d{2}:\d{2})\]?\s+)?INFO\s+=== ORCHESTRATOR START:\s+(?P<label>.*?)\s+===')
-RE_ITERATION_START = re.compile(r'(?:\[?(?P<time>\d{2}:\d{2}:\d{2})\]?\s+)?INFO\s+Execution started\. Duration: (?P<dur>[\d\.]+)s')
-RE_ACTOR_SPAWN = re.compile(r'(?:\[?(?P<time>\d{2}:\d{2}:\d{2})\]?\s+)?INFO\s+Spawn:\s+(?P<tool>\w+)\s+->\s+(?P<log>\S+)(?:.*\(Tput/Mult:\s+(?P<load>[\d\.\?]+)/(?P<mult>[\d\.\?]+)\))?')
-RE_ITERATION_END = re.compile(r'(?:\[?(?P<time>\d{2}:\d{2}:\d{2})\]?\s+)?INFO\s+(Iteration execution finished|Orchestrator finished)\.')
-RE_MANUAL_TREX = re.compile(r'INFO\s+TREX START: (?P<profile>.+) \(ID: (?P<id>[^\)]+)\)')
-RE_MANUAL_JMETER = re.compile(r'INFO\s+JMETER START: (?P<profile>.+) \(ID: (?P<id>[^\)]+)\)')
-
+from reporting.strategies.base_strategy import BaseReportStrategy
 
 class DDoSReportStrategy(BaseReportStrategy):
     """
     Классическая стратегия для отчетов тестирования защиты от DDoS.
     Особенности логики: Дропы (ошибки) JMeter = FAIL, Дропы TRex = SUCCESS (Blocked).
+    Наследует I/O и parse_logs от BaseReportStrategy.
     """
-
-    def parse_logs(self):
-        """Этап 1: Парсинг базового лога оркестратора"""
-        Log.info(f"[{self.__class__.__name__}] Parsing root session log: {self.session_log_path}")
-        
-        session = {
-            'label': 'Manual / Single Run',
-            'type': 'Single',
-            'start': '?',
-            'end': '?',
-            'iterations': []
-        }
-        
-        if not os.path.exists(self.session_log_path):
-            Log.error("Session log not found!")
-            return session
-
-        current_iter = None
-        is_orchestrator = False
-
-        def ensure_iter(start_time, dur=0):
-            nonlocal current_iter
-            if current_iter is None:
-                current_iter = {'id': len(session['iterations']) + 1, 'start': start_time, 'duration': dur, 'actors': []}
-                session['iterations'].append(current_iter)
-            return current_iter
-
-        with open(self.session_log_path, 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                line = line.strip()
-                if not line: continue
-                
-                # Читаем основные маркеры
-                if m := RE_SESSION_START.search(line):
-                    raw_label = m.group('label').strip()
-                    session['label'] = raw_label
-                    session['start'] = m.group('time')
-                    is_orchestrator = True
-
-                    # --- НОВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА ИЗ КОНФИГА ---
-                    # 1. Пытаемся найти ID сценария в квадратных скобках [CAP4_PD_WE]
-                    m_tag = re.search(r'\[(.*?)\]', raw_label)
-                    if m_tag:
-                        sc_id = m_tag.group(1)
-                        # 2. Ищем этот ID в секции scenarios нашего конфига
-                        sc_config = self.config.get('scenarios', {}).get(sc_id, {})
-                        # 3. Берем тип из конфига, если его нет — 'single'
-                        session['type'] = sc_config.get('type', 'single').lower()
-                        Log.info(f"[{self.__class__.__name__}] Detected scenario '{sc_id}' with type '{session['type']}' from config")
-                    
-                    continue
-                elif m := RE_ITERATION_START.search(line):
-                    current_iter = None
-                    ensure_iter(m.group('time'), float(m.group('dur')))
-                    is_orchestrator = True
-                elif not is_orchestrator and (m := RE_MANUAL_TREX.search(line)):
-                    t = line[:8] if len(line) >= 8 else "?"
-                    ensure_iter(t)['actors'].append({
-                        'start': t, 'tool': 'TREX', 'log': f"{m.group('id')}.log", 'profile': m.group('profile'),
-                        'load': '?', 'mult': '?', 'artifacts': [{'name': 'TRex Console', 'link': f"{m.group('id')}.log", 'style': 'btn-console'}]
-                    })
-                    session['label'] = f"TRex: {m.group('profile')}"
-                elif not is_orchestrator and (m := RE_MANUAL_JMETER.search(line)):
-                    t = line[:8] if len(line) >= 8 else "?"
-                    run_id = m.group('id')
-                    ensure_iter(t)['actors'].append({
-                        'start': t, 'tool': 'JMETER', 'log': f"{run_id}_internal.log", 'profile': m.group('profile'),
-                        'load': '?', 'mult': '?', 'artifacts': [
-                            {'name': 'JMeter Console', 'link': f"{run_id}_internal.log", 'style': 'btn-console'},
-                            {'name': 'HTML Report', 'link': f"{run_id}_report/index.html", 'style': 'btn-primary'}
-                        ]
-                    })
-                    session['label'] = f"JMeter: {m.group('profile')}"
-                elif m := RE_ACTOR_SPAWN.search(line):
-                    spawn_time = m.group('time') or '00:00:00'
-                    it = ensure_iter(spawn_time)
-                    tool, log_file = m.group('tool'), m.group('log')
-                    if any(a['log'] == log_file for a in it['actors']): continue
-                    
-                    prof_name = re.sub(r'(_run\d+)?_\d{6}$', '', log_file.replace('.log', ''))
-                    if prof_name.lower().startswith(f"{tool.lower()}_"): prof_name = prof_name[len(tool)+1:]
-                    
-                    artifacts = [{'name': f'{tool} Console', 'link': log_file, 'style': 'btn-console'}]
-                    if tool == 'JMETER':
-                        base = log_file.replace('.log', '')
-                        artifacts.extend([
-                            {'name': 'Raw JTL', 'link': f"{base}.jtl", 'style': 'btn'},
-                            {'name': 'HTML Report', 'link': f"{base}_report/index.html", 'style': 'btn-primary'}
-                        ])
-                        
-                    it['actors'].append({
-                        'start': spawn_time, 'tool': tool, 'log': log_file, 'profile': prof_name,
-                        'load': m.group('load') or '?', 'mult': m.group('mult') or '?', 'artifacts': artifacts
-                    })
-                elif m := RE_ITERATION_END.search(line):
-                    if current_iter: current_iter['end'] = m.group('time')
-                    current_iter = None
-
-        if session['iterations']: session['end'] = session['iterations'][-1].get('end', '?')
-        return session
 
     def evaluate_metrics(self, data):
         """Этап 2: Копирование файлов, чтение статы и БИЗНЕС-ЛОГИКА (Вердикты)"""
@@ -140,18 +28,22 @@ class DDoSReportStrategy(BaseReportStrategy):
                 # 1. Копируем логи и JTL в директорию результатов
                 src_log = os.path.join(self.logs_root, self.session_id, a['log'])
                 dst_log = os.path.join(self.out_dir, a['log'])
-                if os.path.exists(src_log): shutil.copy2(src_log, dst_log)
+                if os.path.exists(src_log): 
+                    shutil.copy2(src_log, dst_log)
                 
                 if a['tool'] == 'JMETER':
                     base = a['log'].replace('.log', '')
                     for ext in ['.jtl', '_report']:
-                        src, dst = os.path.join(self.logs_root, self.session_id, base + ext), os.path.join(self.out_dir, base + ext)
+                        src = os.path.join(self.logs_root, self.session_id, base + ext)
+                        dst = os.path.join(self.out_dir, base + ext)
                         if os.path.exists(src):
                             shutil.copy2(src, dst) if os.path.isfile(src) else shutil.copytree(src, dst, dirs_exist_ok=True)
 
-                # 2. Читаем статистику
+                # 2. Читаем статистику (Используем старый текстовый парсер)
                 stats = self._get_actor_stats_from_log(a['tool'], dst_log)
-                actual_rps, errors, total = stats.get('rps', 0), stats.get('errors', 0), stats.get('total', 0)
+                actual_rps = stats.get('rps', 0)
+                errors = stats.get('errors', 0)
+                total = stats.get('total', 0)
                 
                 if actual_rps > 0 and a['tool'] != 'TREX':
                     data['eval_meta']['total_rps_accum'] += actual_rps
@@ -159,13 +51,13 @@ class DDoSReportStrategy(BaseReportStrategy):
 
                 # 3. БИЗНЕС-ЛОГИКА ОЦЕНКИ
                 eval_data = self._calculate_status(a, stats, actual_rps, errors, total)
-                a['eval'] = eval_data  # Сохраняем вычисленные стили и статусы для шаблона
+                a['eval'] = eval_data  
                 a['stats'] = stats
 
         return data
 
     def render_html(self, data):
-        """Этап 3: Сборка HTML из готовых данных (без логики расчетов)"""
+        """Этап 3: Сборка HTML из готовых данных (без ECharts)"""
         Log.info(f"[{self.__class__.__name__}] Generating HTML...")
         overview_rows = ""
         artifacts_section_html = ""
@@ -179,9 +71,9 @@ class DDoSReportStrategy(BaseReportStrategy):
                 rt_display = "-"
                 if a['tool'] == 'JMETER' and st.get('avg_rt') != '-':
                     rt_display = f"{st['avg_rt']} ms<br><span style='font-size:0.85em; color:#888;'>(Max: {st['max_rt']})</span>"
-                elif a['tool'] == 'TREX': rt_display = "<span style='color:#555;'>N/A</span>"
+                elif a['tool'] == 'TREX': 
+                    rt_display = "<span style='color:#555;'>N/A</span>"
 
-                # Генерируем строку таблицы (данные уже посчитаны в evaluate_metrics)
                 overview_rows += f"""
                 <tr {ev['row_style']}>
                     <td>{ev['display_name']}</td>
@@ -195,7 +87,6 @@ class DDoSReportStrategy(BaseReportStrategy):
                 </tr>
                 """
                 
-                # Кнопки артефактов
                 btns = "".join([f'<a href="{art["link"]}" class="btn {art.get("style", "btn")}" target="_blank">{art["name"]}</a> ' for art in a['artifacts']])
                 iter_artifacts_inner += f"""
                 <div style="margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:10px;">
@@ -208,7 +99,6 @@ class DDoSReportStrategy(BaseReportStrategy):
                 
             artifacts_section_html += f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Iteration #{it["id"]} Artifacts</span></div><div class="iter-body">{iter_artifacts_inner}</div></div>'
 
-        # Target Metrics Chart
         target_health_html = ""
         src_csv = os.path.join(self.logs_root, self.session_id, "target_metrics.csv")
         if os.path.exists(src_csv):
@@ -218,11 +108,9 @@ class DDoSReportStrategy(BaseReportStrategy):
                 target_health_html = build_target_chart_html(os.path.join(self.out_dir, "target_metrics.csv"))
             except ImportError: pass
 
-        # Очистка сессионного лога
         cleaned_log = self._read_and_clean_session_log(self.session_log_path)
         log_section_html = f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Full Session Log</span></div><div class="iter-body" style="padding:0;"><pre class="log-view">{cleaned_log}</pre></div></div>'
 
-        # Итоговые цифры
         meta = data['eval_meta']
         avg_session_rps = round(meta['total_rps_accum'] / meta['valid_rps_count'], 1) if meta['valid_rps_count'] > 0 else 0
         total_duration_str = "~"
@@ -372,42 +260,3 @@ class DDoSReportStrategy(BaseReportStrategy):
                             else: stats.update({'avg_bps': val_bps, 'rps': val_bps / 1000})
         except: pass
         return stats
-
-    def _read_and_clean_session_log(self, log_path):
-        if not os.path.exists(log_path): return "Log file not found."
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        try:
-            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                return "".join([ansi_escape.sub('', line) for line in f])
-        except Exception as e: return f"Error reading log: {e}"
-
-    def _format_session_label(self, raw_label, session_data):
-        m_params = re.search(r'\((Low|Medium|High)\s*\((.*?)\)\)$', raw_label, re.IGNORECASE)
-        level, details = (m_params.group(1).strip(), m_params.group(2).strip()) if m_params else ("", "")
-        title_part = raw_label[:m_params.start()].strip() if m_params else raw_label
-
-        m_tag = re.search(r'\[(.*?)\]', title_part)
-        tag = f"[{m_tag.group(1)}]" if m_tag else ""
-        title_part = title_part.replace(m_tag.group(0), '') if m_tag else title_part
-
-        m_desc = re.search(r'\((.*?)\)', title_part)
-        desc = f"({m_desc.group(1)})" if m_desc else ""
-        title_part = title_part.replace(m_desc.group(0), '') if m_desc else title_part
-
-        clean_title = re.sub(r'^\+\s*|\s*\+$', '', re.sub(r'\s+', ' ', title_part).strip()).strip()
-        final_label = f"{tag} {desc}".strip() or clean_title
-
-        if level and details:
-            if "RPS" not in details and session_data:
-                try:
-                    jmeter_load = next((a['load'] for a in session_data['iterations'][0]['actors'] if a['tool'] == 'JMETER' and a.get('load') and a['load'] != '?'), None)
-                    if jmeter_load: details = re.sub(r'^(\d+m:)\s*', fr'\1 {jmeter_load} RPS Base, ', details) if re.match(r'^\d+m:', details) else f"{jmeter_load} RPS Base, {details}"
-                except: pass
-
-            details = re.sub(r'(\d+)m:', r'\1min / ', details)
-            details = re.sub(r'(\d+)\s*Mult', lambda m: f"{int(m.group(1))/1000:g} Mpps" if int(m.group(1)) >= 1000 else f"{m.group(1)}k pps", details).replace(',', ' &')
-            final_subtitle = f"{clean_title} | {level} Load: {details}" if final_label != clean_title else f"{level} Load: {details}"
-        else:
-            final_subtitle = "" if final_label == clean_title else clean_title
-
-        return final_label, final_subtitle

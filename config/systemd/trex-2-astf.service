@@ -1,0 +1,12 @@
+[Unit]
+Description=TREX Service Instance 1
+
+[Service]
+StandardOutput=journal
+StandardError=journal
+WorkingDirectory=/opt/trex
+ExecStart=/opt/trex/t-rex-64 -i --astf --software       --tso-disable --lro-disable --iom 0 --cfg /etc/trex_cfg_2.yaml --no-scapy-server --no-watchdog
+#ExecStart=/opt/trex/t-rex-64 -i --astf --iom 0 --cfg /etc/trex_cfg_2.yaml --no-scapy-server --no-watchdog
+
+[Install]
+WantedBy=multi-user.target

@@ -110,19 +110,57 @@ def execute_scenario_logic(runner_instance, scenario_id: str, conf: dict, label:
     # =========================================================
     # 1. SMART LAUNCH SCREEN & INTERACTIVE TUNING
     # =========================================================
-    if not is_batch:
-        print(f"\n{Colors.CYAN}=========================================={Colors.ENDC}")
-        print(f"{Colors.BOLD}🎯 TEST: {label}{Colors.ENDC}")
-        print(f"{Colors.CYAN}=========================================={Colors.ENDC}")
-        
-        prompt_msg = conf.get('prompt')
-        if prompt_msg:
-            print(f"{Colors.YELLOW}>>> ACTION REQUIRED: {prompt_msg}{Colors.ENDC}\n")
+    print(f"\n{Colors.CYAN}=========================================={Colors.ENDC}")
+    print(f"{Colors.BOLD}🎯 TEST: {label}{Colors.ENDC}")
+    print(f"{Colors.CYAN}=========================================={Colors.ENDC}")
+    
+    prompt_msg = conf.get('prompt', f"Подтвердите запуск сценария: {label}")
+    
+    # Анализируем возможности сценария через слой утилит
+    can_inject_ips = sc_utils.has_malware_capability(conf)
+    
+    # Уточняем: автоматическим сериям (binary_search) стартовая модалка нужна, пошаговым - нет
+    series_cfg = conf.get('series', {})
+    is_binary_search = isinstance(series_cfg, dict) and series_cfg.get('type') == 'binary_search'
+    is_stepped_interactive = conf.get('interactive', False) and scen_type == 'series' and not is_binary_search
 
-        try:
+    try:
+        if not is_stepped_interactive:
+            
+            # ---------------------------------------------------
+            # ВЕТВЛЕНИЕ 1: WEB API (Фоновый режим без терминала)
+            # ---------------------------------------------------
             if not sys.stdin.isatty():
-                Log.info("Web/API Mode detected. Skipping console prompt.")
-            else:
+                # Игнорируем is_batch: если есть IPS или prompt, обязаны спросить фронт
+                if can_inject_ips or conf.get('prompt'):
+                    user_opts = wait_for_user_signal(prompt_msg, allow_ips_toggle=can_inject_ips)
+                    
+                    if user_opts.get('abort'):
+                        Log.warning("Aborted by user via Web UI.")
+                        return False
+                        
+                    if user_opts.get('inject_ips'):
+                        Log.info(f"💉 Активирован Malware Overlay (IPS) для старта {scenario_id}!")
+                        conf['_runtime_inject_ips'] = True 
+                        sc_utils.apply_malware_overlay(conf)
+                else:
+                    Log.info("Web/API Mode detected. No manual prompt required. Starting...")
+            
+            # ---------------------------------------------------
+            # ВЕТВЛЕНИЕ 2: CONSOLE TUI (Ручной запуск из терминала)
+            # ---------------------------------------------------
+            elif not is_batch:  # <-- А ВОТ ТУТ is_batch БЛОКИРУЕТ РУЧНОЙ ТЮНИНГ
+                if conf.get('prompt'):
+                    print(f"{Colors.YELLOW}>>> ACTION REQUIRED: {prompt_msg}{Colors.ENDC}\n")
+                
+                # Спрашиваем про IPS до тюнинга остальных параметров
+                if can_inject_ips:
+                    ans = input(f"🔥 Включить инъекцию малвари (IPS Overlay)? [y/N]: ").strip().lower()
+                    if ans == 'y':
+                        Log.info(f"💉 Активирован Malware Overlay (IPS) для старта {scenario_id}!")
+                        conf['_runtime_inject_ips'] = True 
+                        sc_utils.apply_malware_overlay(conf)
+
                 choice = 'i' if preset_name == 'custom' else input(f"Press {Colors.GREEN}[Enter]{Colors.ENDC} to start, {Colors.YELLOW}[I]{Colors.ENDC} to Interactive tune, or {Colors.RED}[Q]{Colors.ENDC} to Quit: ").strip().lower()
                 
                 if choice == 'q':
@@ -157,13 +195,13 @@ def execute_scenario_logic(runner_instance, scenario_id: str, conf: dict, label:
                             cur_mult = sc_utils.resolve_val(actor.get('overridemult', 1))
                             m_val = input(f"TRex Multiplier (Mult) x 1000 Mp/s [{cur_mult}]: ").strip()
                             if m_val: actor['overridemult'] = int(m_val)
-                            
-        except ValueError:
-            Log.error("Invalid number entered! Aborting run.")
-            return False
-        except KeyboardInterrupt:
-            print(f"\n{Colors.RED}Run cancelled by user.{Colors.ENDC}")
-            return False
+
+    except ValueError:
+        Log.error("Invalid number entered! Aborting run.")
+        return False
+    except KeyboardInterrupt:
+        print(f"\n{Colors.RED}Run cancelled by user.{Colors.ENDC}")
+        return False
 
     # =========================================================
     # 2. МАРШРУТИЗАЦИЯ ПО СТРАТЕГИЯМ
@@ -171,11 +209,7 @@ def execute_scenario_logic(runner_instance, scenario_id: str, conf: dict, label:
     if scen_type == 'series' or 'series' in conf:
         return _route_series(runner_instance, scenario_id, conf)
     else:
-        # Простой single run
-        if not is_batch and not conf.get('prompt'):
-            if sys.stdin.isatty():
-                input(f"{Colors.BOLD}>>> Press Enter to start single run...{Colors.ENDC}\n")
-            
+        # Простой single run. 
         runner_instance._execute_iteration(scenario_id, conf, run_index=None)
         return True
 
@@ -189,26 +223,26 @@ def _route_series(runner, scenario_id, conf):
     if isinstance(series_data, list):
         Log.info(f"Starting List Series: {len(series_data)} steps")
         return _run_list_series(runner, scenario_id, conf, series_data)
-        
+
     elif isinstance(series_data, int):
         Log.info(f"Starting Simple Repeat Series: {series_data} iterations")
         return _run_legacy_repeats(runner, scenario_id, conf, repeats=series_data)
-        
+
     elif isinstance(series_data, dict):
         strategy = series_data.get('type', 'stepped')
-        
+
         if strategy == 'stepped':
             Log.info("Starting Stepped Degradation Series")
             return _run_stepped_series(runner, scenario_id, conf, series_data)
-            
+
         elif strategy == 'binary_search':
             Log.info("Starting Binary Search Series (RFC2544 style)")
             return _run_binary_search(runner, scenario_id, conf, series_data)
-            
+
         else:
             Log.error(f"Unknown series strategy: {strategy}")
             return False
-            
+
     else:
         repeats = conf.get('repeats', 1)
         Log.info(f"Starting Legacy Series: {repeats} iterations")
@@ -337,7 +371,7 @@ def _run_binary_search(runner, scenario_id, conf, data):
     precision = data.get('precision', 1)
     target_scenario = data.get('target', scenario_id)
     
-    Log.info(f"\n{Colors.CYAN}=================================================={Colors.ENDC}")
+    Log.info(f"{Colors.CYAN}=================================================={Colors.ENDC}")
     Log.info(f"🚀 СТАРТ: АВТОМАТИЧЕСКИЙ БИНАРНЫЙ ПОИСК (RFC 2544 style)")
     Log.info(f"Диапазон: [{min_val} - {max_val}], Точность: {precision}")
     Log.info(f"{Colors.CYAN}=================================================={Colors.ENDC}")
@@ -353,6 +387,9 @@ def _run_binary_search(runner, scenario_id, conf, data):
         try:
             # 🟢 Теперь copy импортирован, ошибка не вылетит!
             step_conf = copy.deepcopy(runner.scenarios.get(target_scenario, conf))
+            
+            if conf.get('_runtime_inject_ips'):
+                sc_utils.apply_malware_overlay(step_conf)            
             
             for actor in step_conf.get('actors', []):
                 if actor.get('tool') == 'trex': 

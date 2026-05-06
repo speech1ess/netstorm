@@ -191,7 +191,7 @@ NGFW_SESSION_REPORT_TEMPLATE = """<!DOCTYPE html>
         <h2 style="display:flex; justify-content:space-between; align-items:center;">
             <span>Execution Overview</span>
             <span style="font-size: 13px; color: #7f8c8d; font-weight: normal;">
-                Limits Applied: <b style="color:#f39c12">Warn {warn_limit}</b> / <b style="color:#e74c3c">Fatal {fatal_limit}</b> Drops
+                Limits Applied: <b style="color:#f39c12">Warn {warn_limit}</b> / <b style="color:#e74c3c">Fatal {fatal_limit}</b> %
             </span>
         </h2>
         <table>
@@ -201,8 +201,8 @@ NGFW_SESSION_REPORT_TEMPLATE = """<!DOCTYPE html>
                     <th>Start Time</th>
                     <th>Duration</th>
                     <th>Load Config</th>
-                    <th>Actual RPS</th>
-                    <th>Response Time</th> 
+                    <th>Throughput / RPS</th>
+                    <th>Latency Avg</th> 
                     <th>Errors</th>
                     <th>Status</th>
                     <th>Health</th>

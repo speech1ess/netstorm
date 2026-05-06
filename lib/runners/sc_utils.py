@@ -148,91 +148,235 @@ def build_cmd(tool, profile, duration, mult, tput, threads, log_name_base, actor
 
 def _evaluate_health(runner, step_conf, run_index):
     """
-    Гибридный Health-Check (Ping + TRex Logs).
-    Возвращает КОРТЕЖ: (status_string, drops_count, ping_ok_boolean)
+    Гибридный Health-Check (Ping + TRex JSON Telemetry).
+    Возвращает КОРТЕЖ: (status_string, drop_pct, ping_ok_boolean)
     """
     Log.info("\n🏥 --- Running Hybrid Health Check ---")
     dut_conf = runner.conf.get('program', {}).get('dut', {})
 
-    # --- 1. ПРОВЕРКА CONTROL PLANE (Ping) ---
-    ping_ok = True
+    # =========================================================================
+    # 1. ПРОВЕРКА CONTROL PLANE (Ping & SSH via NetNS)
+    # =========================================================================
     mgmt_ip = dut_conf.get('mgmt_ip')
-    
-    if mgmt_ip:
-        # Пингуем: 1 пакет, таймаут 1 секунда. Вывод прячем.
-        resp = subprocess.run(['ping', '-c', '1', '-W', '1', mgmt_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        ping_ok = (resp.returncode == 0)
-        
-        if not ping_ok:
-            Log.warning(f"⚠️ [Control Plane] Ping to DUT ({mgmt_ip}) FAILED! Mgmt interface is unresponsive.")
-        else:
-            Log.success(f"✅ [Control Plane] DUT ({mgmt_ip}) is ALIVE.")
-    else:
-        Log.warning("⚠️ [Control Plane] 'mgmt_ip' not found in YAML. Skipping Ping.")
+    target_netns = SharedConfig.get('nodes.victim.net.netns', 'webserver')
 
-    # --- 2. ПРОВЕРКА DATA PLANE (TRex Logs) ---
-    drops = 0
-    log_found = False
+    ping_ok, ssh_ok = False, False
+
+    if not mgmt_ip:
+        Log.warning("⚠️ [Control Plane] 'mgmt_ip' not found in YAML. Skipping Checks.")
+    else:
+        def check_port_in_netns(ns: str, ip: str, port: str = None) -> bool:
+            if port:
+                cmd = ['ip', 'netns', 'exec', ns, 'nc', '-z', '-w', '1', ip, str(port)]
+            else:
+                cmd = ['ip', 'netns', 'exec', ns, 'ping', '-c', '1', '-W', '1', ip]
+            try:
+                # Жесткий таймаут для защиты оркестратора от зависания процесса
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                return res.returncode == 0
+            except subprocess.TimeoutExpired:
+                Log.error(f"💀 [Control Plane] Timeout trying to reach {ip} from netns '{ns}'!")
+                return False
+            except Exception as e:
+                Log.error(f"💀 [Control Plane] OS execution error in netns '{ns}': {e}")
+                return False
+
+        ping_ok = check_port_in_netns(target_netns, mgmt_ip)
+        ssh_ok = check_port_in_netns(target_netns, mgmt_ip, port=22)
+
+        if not ping_ok:
+            Log.warning(f"⚠️ [Control Plane] Ping to DUT ({mgmt_ip}) from '{target_netns}' FAILED!")
+        else:
+            Log.success(f"✅ [Control Plane] Ping DUT ({mgmt_ip}) from '{target_netns}' is OK.")
+
+        if not ssh_ok:
+            Log.warning(f"⚠️ [Control Plane] SSH (Port 22) to DUT ({mgmt_ip}) from '{target_netns}' is CLOSED!")
+        else:
+            Log.success(f"✅ [Control Plane] SSH (Port 22) to DUT ({mgmt_ip}) from '{target_netns}' is OPEN.")
+
+    # =========================================================================
+    # 2. ПРОВЕРКА DATA PLANE (TRex JSON Stats & Linux Network Stack Analysis)
+    # =========================================================================
+    tx_pkts = 0
+    rx_pkts = 0
+    absolute_drops = 0
+    stats_found = False
+    
+    log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), runner.session_id)
     
     for actor in step_conf.get('actors', []):
-        if actor.get('tool', '').lower() == 'trex':
-            log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), runner.session_id)
-            search_pattern = os.path.join(log_dir, f"trex_{actor.get('profile')}_run{run_index}_*.log")
-            found_logs = glob.glob(search_pattern)
+        if actor.get('tool', '').lower() != 'trex':
+            continue
             
-            if found_logs:
-                log_path = found_logs[0] 
-                log_found = True
-                try:
-                    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        lines = f.readlines()
-                        tail = lines[-30:] 
+        search_pattern = os.path.join(log_dir, f"trex_{actor.get('profile')}_run{run_index}_*.log")
+        found_logs = glob.glob(search_pattern)
+        
+        if not found_logs:
+            continue
+            
+        base_log_name = os.path.basename(found_logs[0]).replace('.log', '')
+        stats_path = os.path.join(log_dir, f"stats_{base_log_name}.json")
+        
+        if os.path.exists(stats_path):
+            stats_found = True
+            try:
+                with open(stats_path, 'r', encoding='utf-8') as f:
+                    stats_data = json.load(f)
+                    
+                    tx_pkts = stats_data.get('global', {}).get('tx_pkts', 0)
+                    rx_pkts = stats_data.get('global', {}).get('rx_pkts', 0)
+                    
+                    # Обработка Stateful (ASTF) телеметрии
+                    if tx_pkts == 0 and 'traffic' in stats_data:
+                        client = stats_data.get('traffic', {}).get('client', {})
                         
-                        for line in tail:
-                            if "Error" in line or "Traceback" in line:
-                                Log.error("❌ [Data Plane] TRex script crashed (Error found in log).")
-                                # 🟢 ИЗМЕНЕНИЕ: Возвращаем статус FATAL
-                                return "FATAL", drops, ping_ok
+                        tcp_attempt = client.get('tcps_connattempt', 0)
+                        udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
+                        tx_pkts = tcp_attempt + udp_flows
+                        
+                        tg_names = client.get('tg_names', {})
+                        
+                        # 🟢 DATA-DRIVEN ПЛАН А: Извлечение аппаратных тегов с учетом иерархии
+                        if 'legit' in tg_names:
+                            legit_client = tg_names['legit'].get('client', {})
+                            
+                            # Агрегация всех отказов обслуживания (DoS):
+                            # tcps_drops       - потери L4 (переполнение очередей qdisc)
+                            # tcps_conndrops   - исчерпание nf_conntrack ядра Linux
+                            # tcps_timeoutdrop - отвалы сессий по таймауту
+                            # udps_keepdrops   - отброшенные UDP
+                            absolute_drops = (
+                                legit_client.get('tcps_drops', 0) +
+                                legit_client.get('tcps_conndrops', 0) +
+                                legit_client.get('tcps_timeoutdrop', 0) +
+                                legit_client.get('udps_keepdrops', 0)
+                            )
+                            rx_pkts = max(0, tx_pkts - absolute_drops)
+                            Log.info(f"🛡️ [IPS Bypass] Found 'legit' tag. Exact legit drops (Total DoS): {absolute_drops}")
+                            
+                        # ⚠️ ПЛАН Б: Эвристический фоллбэк
+                        else:
+                            tcp_drops = client.get('tcps_drops', 0) + client.get('tcps_conndrops', 0)
+                            udp_drops = client.get('udps_noportbcast', 0)
+                            raw_absolute_drops = tcp_drops + udp_drops
+                            
+                            profile_name = actor.get('profile')
+                            prof_data = runner.conf.get('profiles', {}).get('trex', {}).get(profile_name, {})
+                            
+                            tool_params = copy.deepcopy(prof_data.get('tunables', {}))
+                            tool_params.update(actor.get('tunables', {}))
+                            
+                            if tool_params.get('inject_malware') == 1:
+                                legit_cps = sum(float(p.get('cps', 0)) for p in tool_params.get('pcap_list', []))
+                                malware_cps = sum(float(m.get('cps', 0)) for m in tool_params.get('malware_list', []))
+                                total_cps = legit_cps + malware_cps
                                 
-                            if "Drops:" in line:
-                                try:
-                                    drops_str = line.split("Drops:")[-1].strip()
-                                    drops = int(drops_str)
-                                except ValueError:
-                                    pass
-                except Exception as e:
-                    Log.error(f"Failed to read log {log_path}: {e}")
+                                if total_cps > 0:
+                                    malware_ratio = malware_cps / total_cps
+                                    expected_ips_drops = int(tx_pkts * malware_ratio)
+                                    absolute_drops = max(0, raw_absolute_drops - expected_ips_drops)
+                                    Log.warning(f"⚠️ [Data Plane] 'tg_names' missing. Activating HEURISTIC fallback!")
+                                    Log.info(f"📐 [IPS Math] Raw Drops: {raw_absolute_drops} | Expected Malware: {expected_ips_drops} | COMPUTED Legit Drops: {absolute_drops}")
+                                else:
+                                    absolute_drops = raw_absolute_drops
+                            else:
+                                absolute_drops = raw_absolute_drops
+                                
+                            rx_pkts = max(0, tx_pkts - absolute_drops)
 
-    if not log_found:
-        Log.warning("⚠️ Could not find TRex log to evaluate Data Plane. Proceeding blind.")
-        # 🟢 ИЗМЕНЕНИЕ: Возвращаем статус OK
-        return "OK", drops, ping_ok 
+            except json.JSONDecodeError as e:
+                Log.error(f"❌ [Data Plane] Invalid JSON format in TRex telemetry: {e}")
+                return "FATAL", 0.0, ping_ok
+            except Exception as e:
+                Log.error(f"❌ [Data Plane] Failed to parse TRex telemetry JSON: {e}")
+                return "FATAL", 0.0, ping_ok
 
-    Log.info(f"📊 [Data Plane] Detected Drops: {drops}")
+    # =========================================================================
+    # 3. АНАЛИЗ ПОТЕРЬ И РЕШЕНИЕ
+    # =========================================================================
+    if not stats_found:
+        Log.error("💀 FATAL: Could not find TRex JSON telemetry. Proceeding BLOCKED. Generator failed?")
+        return "FATAL", 0.0, ping_ok 
 
-    # --- 3. ПРИНЯТИЕ РЕШЕНИЯ (С ЧТЕНИЕМ ИЗ YAML) ---
+    if tx_pkts == 0:
+        Log.error("💀 FATAL: TRex reported 0 TX packets/flows. No traffic was generated.")
+        return "FATAL", 0.0, ping_ok
+
+    drop_pct = round((absolute_drops / tx_pkts) * 100.0, 4) if tx_pkts > 0 else 0.0
+    Log.info(f"📊 [Data Plane] Total TX (Pkts/Flows): {tx_pkts} | RX: {rx_pkts} | Legit Drops: {absolute_drops} ({drop_pct}%)")
+        
     thresholds = dut_conf.get('thresholds') or dut_conf.get('tresholds') or {}
+    WARN_LIMIT = float(thresholds.get('warn', 0.05))
+    FATAL_LIMIT = float(thresholds.get('fatal', 0.1))
     
-    WARN_LIMIT = int(thresholds.get('warn', 1000))
-    FATAL_LIMIT = int(thresholds.get('fatal', 5000))
-    
-    Log.info(f"⚙️ Limits applied -> WARN: {WARN_LIMIT}, FATAL: {FATAL_LIMIT}")
+    Log.info(f"⚙️ Limits applied -> WARN: {WARN_LIMIT}%, FATAL: {FATAL_LIMIT}%")
 
-    if drops < WARN_LIMIT:
+    if drop_pct < WARN_LIMIT:
         if not ping_ok:
             Log.info("Data Plane is clean! Ignoring Control Plane failure.")
         Log.success("🏥 Health Check Passed. Ready for next step.")
-        # 🟢 ИЗМЕНЕНИЕ: Возвращаем статус OK
-        return "OK", drops, ping_ok
+        return "OK", drop_pct, ping_ok
         
-    elif WARN_LIMIT <= drops < FATAL_LIMIT:
-        # 🟡 ЖЕЛТАЯ ЗОНА: Возвращаем статус WARN, Оркестратор решит что делать
-        Log.warning(f"🔥 ВНИМАНИЕ! Обнаружено {drops} потерь (Drops). Превышен WARN_LIMIT ({WARN_LIMIT}).")
-        # 🟢 ИЗМЕНЕНИЕ: Убрали вызов UI из утилиты!
-        return "WARN", drops, ping_ok
+    elif WARN_LIMIT <= drop_pct < FATAL_LIMIT:
+        Log.warning(f"🔥 ВНИМАНИЕ! Обнаружено {drop_pct}% потерь. Превышен WARN_LIMIT ({WARN_LIMIT}%).")
+        return "WARN", drop_pct, ping_ok
         
     else:
-        # 🔴 КРАСНАЯ ЗОНА
-        Log.error(f"💀 FATAL: {drops} drops exceed FATAL_LIMIT ({FATAL_LIMIT}). DUT is overwhelmed.")
-        # 🟢 ИЗМЕНЕНИЕ: Возвращаем статус FATAL
-        return "FATAL", drops, ping_ok
+        Log.error(f"💀 FATAL: {drop_pct}% drops exceed FATAL_LIMIT ({FATAL_LIMIT}%). DUT is overwhelmed.")
+        return "FATAL", drop_pct, ping_ok
+
+def has_malware_capability(conf: dict) -> bool:
+    """Проверяет наличие L7 ASTF EMIX профилей в конфиге."""
+    # 🟢 ФИКС: Используем list(), чтобы создать независимую копию и не мутировать исходный словарь!
+    actors = list(conf.get('actors', []))
+    
+    for tpl_key in ['template', 'step', 'iteration']:
+        if tpl_key in conf:
+            actors.extend(conf[tpl_key].get('actors', []))
+
+    for actor in actors:
+        if actor.get('tool', '').lower() == 'trex' and actor.get('profile', '').lower().startswith('astf_emix_'):
+            return True
+    return False
+
+def apply_malware_overlay(conf: dict):
+    """Data-Driven мутатор: включает IPS для всех поддерживаемых акторов в конфиге."""
+    def _inject(actors_list):
+        for actor in actors_list:
+            if actor.get('profile', '').startswith('astf_emix_'):
+                if 'tunables' not in actor: 
+                    actor['tunables'] = {}
+                actor['tunables']['inject_malware'] = 1
+
+    _inject(conf.get('actors', []))
+    for tpl_key in ['template', 'step', 'iteration']:
+        if tpl_key in conf:
+            _inject(conf[tpl_key].get('actors', []))
+
+def dump_session_meta(session_dir: str, active_config: dict) -> None:
+    """
+    Дамп иммутабельного контекста (Presentation Config) для репортера.
+    Фиксируем только те данные, которые нужны для оценки и рендера.
+    """
+    try:
+        program_conf = active_config.get('program', {})
+        dut_conf = program_conf.get('dut', {})
+        
+        # Формируем строгий DTO
+        meta_payload = {
+            "description": program_conf.get('description', 'Auto-generated load test'),
+            "dut_label": dut_conf.get('label', 'Unknown DUT'),
+            "dut_type": dut_conf.get('type', 'Unknown'),
+            # Берем лимиты или ставим безопасные дефолты
+            "thresholds": dut_conf.get('thresholds') or dut_conf.get('tresholds') or {'warn': 0.05, 'fatal': 0.1}
+        }
+        
+        meta_path = os.path.join(session_dir, 'session_meta.json')
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            # ensure_ascii=False важен, т.к. у тебя русские символы в description
+            json.dump(meta_payload, f, indent=2, ensure_ascii=False)
+            
+        Log.info(f"💾 [State] Session metadata frozen at {meta_path}")
+        
+    except Exception as e:
+        Log.error(f"❌ [State] Failed to dump session meta: {e}")

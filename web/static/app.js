@@ -218,12 +218,11 @@ function buildFieldHtml(actorIndex, fieldKey, fieldLabel, defaultValue) {
     </div>`;
 }
 
-// 🚀 ФУНКЦИЯ РЕНДЕРА МОДАЛКИ (Вставь в app.js)
+// 🚀 ФУНКЦИЯ РЕНДЕРА МОДАЛКИ (Исправленная версия)
 function processPayload(payload) {
-    // 🚨 ДОБАВИТЬ ЭТИ ДВЕ СТРОКИ ДЛЯ ДЕБАГА 🚨
-    console.log("🔥 [DEBUG] Входящий PAYLOAD:", JSON.parse(JSON.stringify(payload)));
-    alert("Новый код работает! Лейбл: " + payload.label);
-    
+    // 🔥 [DEBUG] Входящий PAYLOAD:
+    // console.log("Входящий PAYLOAD:", JSON.parse(JSON.stringify(payload)));
+
     if (payload.preset === 'custom' || payload.label.includes('Custom')) {
         pendingPayload = payload;
         
@@ -292,7 +291,6 @@ function processPayload(payload) {
                     ${buildFieldHtml('global', 'interval', 'Interval (сек)', bsInterval)}
                 </div>`;
 
-            // Условный рендер метрик (Drops / Threshold), если они есть в конфиге
             if (mergedSeries.metric !== undefined || mergedSeries.threshold !== undefined) {
                 html += `
                 <div class="mt-3 pt-3 border-t border-zinc-800/50 grid grid-cols-2 gap-4">
@@ -310,7 +308,6 @@ function processPayload(payload) {
             html += `</div>`;
         }
 
-        // Рендерим акторов
         if (targetActors.length > 0) {
             targetActors.forEach((actor, i) => {
                 const isTRex = actor.tool === 'trex';
@@ -357,23 +354,30 @@ function processPayload(payload) {
         } else {
             html += `<div class="text-zinc-500 text-[11px] italic mt-4 text-center p-4 border border-zinc-800/50 rounded border-dashed">Настройки акторов не найдены в схеме</div>`;
         }
-
+        
         container.innerHTML = html;
         document.getElementById('custom-modal').classList.remove('hidden');
-        return;
+        return; // Здесь завершается логика кастомного пресета
     } 
 
+    // 🛡️ Никаких проверок на Malware здесь больше нет!
+    // Если есть системное сообщение из YAML - показываем его
     if (payload.confirm_msg) {
-        if (!confirm(`⚠️ ИНСТРУКЦИЯ ПЕРЕД ЗАПУСКОМ:\n\n${payload.confirm_msg}\nНажмите ОК для продолжения.`)) return; 
-        executeFinal(payload, null); 
-        return; 
+        if (!confirm(`⚠️ ИНСТРУКЦИЯ ПЕРЕД ЗАПУСКОМ:\n\n${payload.confirm_msg}\nНажмите ОК для продолжения.`)) return;
+        executeFinal(payload, null);
+        return;
     }
 
-    if (!confirm(`🚀 Выполнить: ${payload.label}\n\nНажмите ОК для продолжения.`)) return;
+    // Дефолтный алерт для прямых запусков
+    if (!payload.preset?.includes('custom')) {
+        if (!confirm(`🚀 Выполнить: ${payload.label}\n\nНажмите ОК для продолжения.`)) return;
+    }
+
+    // Отправляем команду в оркестратор. Дальше рулит Python!
     executeFinal(payload, null);
 }
 
-// 🚀 ФУНКЦИЯ СБОРКИ (Вставь в app.js)
+// 🚀 ФУНКЦИЯ СБОРКИ (из кастомного модального окна)
 function submitCustomModal() {
     if (!pendingPayload || !pendingPayload.custom_schema) {
         closeCustomModal();
@@ -395,7 +399,6 @@ function submitCustomModal() {
         const rawVal = input.value.trim();
         
         if (rawVal === '') return; 
-        
         const numVal = !isNaN(rawVal) && rawVal !== '' ? Number(rawVal) : rawVal;
 
         if (aIdx === 'global') {
@@ -436,6 +439,7 @@ function submitCustomModal() {
     argsArr.push(`--custom-payload '${jsonString}'`);
     if (wantsReport) argsArr.push("--report");
 
+    // Отправляем собранные лимиты на запуск. Вопросы про Malware задаст Python через паузу.
     executeFinal(payloadToRun, argsArr.join(' '));
 }
 
@@ -455,6 +459,7 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+// 🚀 4. Боевой запуск (executeFinal)
 async function executeFinal(payload, customArgs) {
     Terminal.show();
     
@@ -466,9 +471,21 @@ async function executeFinal(payload, customArgs) {
         Terminal.printHTML(`\n<span class="text-yellow-500 font-bold">--- 🚀 [TEST INITIATED] Переключение на канал боевых логов... ---</span>\n\n`);
 
         let fetchOptions = { method: 'POST' };
+        let reqBody = {};
+        
         if (customArgs) {
+            reqBody.custom_args = customArgs;
+        }
+        
+        // 🟢 ПЕРЕИСПОЛЬЗУЕМ ЛОГИКУ БЭКЕНДА: передаем флаг через options.inject_ips
+        if (payload.wants_malware) {
+            reqBody.options = { inject_ips: true };
+        }
+
+        // Упаковываем тело запроса только если есть аргументы или опции
+        if (Object.keys(reqBody).length > 0) {
             fetchOptions.headers = { 'Content-Type': 'application/json' };
-            fetchOptions.body = JSON.stringify({ custom_args: customArgs });
+            fetchOptions.body = JSON.stringify(reqBody);
         }
 
         let scId = "unknown";
@@ -488,6 +505,13 @@ async function executeFinal(payload, customArgs) {
 
         try {
             if (customArgs) payload.custom_args = customArgs; 
+            
+            // Защита для статических скриптов
+            if (payload.wants_malware) {
+                if (!payload.options) payload.options = {};
+                payload.options.inject_ips = true;
+            }
+
             const response = await fetch('/api/execute', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -565,8 +589,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
 // --- 6. УПРАВЛЕНИЕ ПАУЗАМИ И ОВЕРЛЕЯМИ (ORCHESTRATOR SYNC) ---
 
+let isResuming = false; // 🟢 Транзитное состояние: блокировка на время ответа бэкенда
+
 async function checkPauseState() {
-    if (isHandlingPause) return;
+    // 🛡️ State Machine: игнорируем поллинг, если модалка открыта ИЛИ мы ждем обновления стейта на бэке
+    if (isHandlingPause || isResuming) return; 
+    
     try {
         const r = await fetch('/api/session/state');
         const d = await r.json();
@@ -603,23 +631,31 @@ async function resumePausedSession() {
     const ipsCheckbox = document.getElementById('pause-ips-checkbox');
     const wantsIps = ipsCheckbox ? ipsCheckbox.checked : false;
 
-    // Прячем модалку
+    // 1. Оптимистичный UI: Прячем модалку мгновенно, чтобы не заставлять юзера ждать
     const modalEl = document.getElementById('pause-modal');
     if (modalEl) modalEl.classList.add('hidden');
+
+    // 2. Блокируем гонку состояний
+    isResuming = true;       // Жесткий лок для checkPauseState
+    isHandlingPause = false; // Снимаем лок окна, так как оно уже закрыто
 
     try {
         await fetch('/api/session/resume', { 
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                options: {
-                    inject_ips: wantsIps // 🟢 Передаем выбор инженера в бэкенд
-                }
+                options: { inject_ips: wantsIps }
             })
         });
+
+        // 🛡️ ХАК/DEBOUNCE: Даем файловой системе бэкенда время на удаление/обновление .session_state.json.
+        // Ждем 1.5 секунды, прежде чем снова разрешить поллинг статусов.
+        setTimeout(() => {
+            isResuming = false;
+        }, 1500);
+
     } catch(e) {
         console.error("Ошибка при отправке команды продолжения:", e);
-    } finally {
-        isHandlingPause = false; // Отпускаем блокировку для поллинга
+        isResuming = false; // В случае ошибки снимаем жесткий лок сразу
     }
 }

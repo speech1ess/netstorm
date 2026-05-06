@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart-Stepper: {{ session_id }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #f4f7f6;
+            --card-bg: #ffffff;
+            --text-main: #2c3e50;
+            --text-muted: #7f8c8d;
+            --brand-primary: #3498db;
+            --brand-danger: #e74c3c;
+            --brand-success: #27ae60;
+            --border-color: #ecf0f1;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .header {
+            background: #1a252f;
+            color: #fff;
+            padding: 25px 30px;
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header-meta h1 { margin: 0 0 5px 0; font-size: 24px; font-weight: 600; }
+        .header-meta .subtitle { color: #bdc3c7; font-size: 14px; font-family: monospace; }
+        
+        .card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.02);
+            border: 1px solid var(--border-color);
+        }
+        h2 { font-size: 18px; margin-top: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border-color); padding-bottom: 10px; }
+        
+        /* Таблицы */
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; background: #f8f9fa; padding: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; border-bottom: 2px solid var(--border-color); }
+        td { padding: 12px; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+        tr:hover td { background: #fafbfc; }
+        
+        /* Статусы */
+        .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        .badge-pass { background: rgba(39, 174, 96, 0.1); color: var(--brand-success); }
+        .badge-fail { background: rgba(231, 76, 60, 0.1); color: var(--brand-danger); }
+        
+        /* Кнопки */
+        .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn { padding: 6px 12px; font-size: 12px; border-radius: 4px; text-decoration: none; font-weight: 500; font-family: monospace; border: 1px solid #ccc; color: #333; transition: 0.2s; }
+        .btn:hover { background: #eee; }
+        .btn-json { border-color: #f39c12; color: #e67e22; background: rgba(243, 156, 18, 0.05); }
+        .btn-json:hover { background: #f39c12; color: #fff; }
+        
+        pre.log-viewer { background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 6px; overflow-x: auto; max-height: 400px; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Шапка -->
+    <div class="header">
+        <div class="header-meta">
+            <h1>{{ label }}</h1>
+            <div class="subtitle">SESSION: {{ session_id }} | BEHAVIOR: STEPPER | GENERATED: {{ gen_date }}</div>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 28px; font-weight: bold; color: var(--brand-primary);">{{ peak_bw }}</div>
+            <div style="font-size: 12px; color: #95a5a6; text-transform: uppercase;">Peak Throughput</div>
+        </div>
+    </div>
+
+    <!-- График излома (Knee Curve) -->
+    <div class="card" style="border-top: 4px solid var(--brand-primary); margin-top: 20px;">
+        <h2>График деградации пропускной способности (Knee Curve)</h2>
+        <div id="knee-chart" style="width: 100%; height: 400px;"></div>
+    </div>
+
+    <!-- Детализация итераций -->
+    <div class="card">
+        <h2>Матрица итераций Smart-Stepper</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Iteration</th>
+                    <th>Target CPS</th>
+                    <th>Actual BPS</th>
+                    <th>Drops (L7)</th>
+                    <th>Avg Latency</th>
+                    <th>Status</th>
+                    <th>Artifacts</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for it in iterations %}
+                    {% for a in it.actors %}
+                        {% if a.tool == 'TREX' %}
+                        <tr>
+                            <td style="font-weight: bold;">#{{ it.id }}</td>
+                            <td>{{ a.mult }}x 1k CPS</td>
+                            <td>{{ a.stats.max_tx_bw }}</td>
+                            <td style="color: {% if a.stats.astf_drops > 0 %}#e74c3c{% else %}#27ae60{% endif %}; font-weight: bold;">
+                                {{ a.stats.astf_drops }}
+                            </td>
+                            <td>{{ a.stats.latency_avg }} ms</td>
+                            <td>
+                                {% if a.stats.astf_drops > fatal_limit %}
+                                    <span class="badge badge-fail">FAIL</span>
+                                {% else %}
+                                    <span class="badge badge-pass">PASS</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="btn-group">
+                                    <a href="{{ a.log }}" class="btn" target="_blank">📄 TRex Log</a>
+                                    <a href="stats_{{ a.log | replace('.log', '.json') }}" class="btn btn-json" target="_blank">{} JSON</a>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endif %}
+                    {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Сессионный лог -->
+    <div class="card">
+        <h2>Orchestrator Session Log</h2>
+        <pre class="log-viewer">{{ session_log }}</pre>
+    </div>
+</div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        var chartDom = document.getElementById('knee-chart');
+        var myChart = echarts.init(chartDom);
+        
+        var option = {
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'cross' }
+            },
+            legend: {
+                data: ['Throughput (Mbps)', 'Packet Drops'],
+                bottom: 0
+            },
+            grid: { top: 30, left: 60, right: 60, bottom: 60 },
+            xAxis: {
+                type: 'category',
+                name: 'Target Load',
+                nameLocation: 'middle',
+                nameGap: 35,
+                boundaryGap: false,
+                data: {{ trend_data.x | tojson }},
+                axisLine: { lineStyle: { color: '#bdc3c7' } }
+            },
+            yAxis: [
+                {
+                    type: 'value',
+                    name: 'Throughput (Mbps)',
+                    position: 'left',
+                    axisLabel: { color: '#2980b9' },
+                    splitLine: { lineStyle: { type: 'dashed', color: '#ecf0f1' } }
+                },
+                {
+                    type: 'value',
+                    name: 'Drops',
+                    position: 'right',
+                    axisLabel: { color: '#e74c3c' },
+                    splitLine: { show: false }
+                }
+            ],
+            series: [
+                {
+                    name: 'Throughput (Mbps)',
+                    type: 'line',
+                    smooth: true,
+                    symbolSize: 8,
+                    itemStyle: { color: '#2980b9' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(52, 152, 219, 0.3)' },
+                            { offset: 1, color: 'rgba(52, 152, 219, 0.0)' }
+                        ])
+                    },
+                    data: {{ trend_data.y_bps | tojson }}
+                },
+                {
+                    name: 'Packet Drops',
+                    type: 'line',
+                    yAxisIndex: 1,
+                    smooth: true,
+                    symbolSize: 8,
+                    itemStyle: { color: '#e74c3c' },
+                    lineStyle: { type: 'dashed', width: 2 },
+                    data: {{ trend_data.y_drops | tojson }}
+                }
+            ]
+        };
+        myChart.setOption(option);
+        
+        window.addEventListener('resize', function() {
+            myChart.resize();
+        });
+    });
+</script>
+
+</body>
+</html>

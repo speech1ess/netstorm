@@ -1,0 +1,172 @@
+<!-- lib/reporting/templates/ngfw_dashboard.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>PMI Load Test: {{ session_id }}</title>
+    <!-- Подключаем наш внешний CSS -->
+    <link rel="stylesheet" href="../static/style.css">
+    <!-- ECharts CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="report-header">
+        <div class="report-label">Load Testing Report (NGFW)</div>
+        <div class="scenario-title">{{ label }}</div>
+        <div class="scenario-subtitle">{{ subtitle }}</div>
+        <div class="session-meta">SESSION ID: {{ session_id }}</div>
+    </div>
+
+    <div class="content">
+        <!-- СВОДНЫЕ МЕТРИКИ (KPI GRID) -->
+        <div class="meta-grid">
+            <div class="meta-card">
+                <div class="meta-label">Start Time</div>
+                <div class="meta-value" style="font-size:18px">{{ start_time }}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Total Duration</div>
+                <div class="meta-value">{{ total_duration }}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Iterations</div>
+                <div class="meta-value">{{ run_count }}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Total Tests</div>
+                <div class="meta-value" style="color:#2980b9;">{{ total_tests }}</div>
+            </div>
+            <div class="meta-card">
+                <div class="meta-label">Peak Throughput</div>
+                <div class="meta-value" style="color:#27ae60;">{{ peak_bw }}</div>
+            </div>
+        </div>
+
+        <h2 style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Execution Overview</span>
+            <span style="font-size: 13px; color: #7f8c8d; font-weight: normal; font-family: 'Inter', sans-serif;">
+                Limits Applied: <b style="color:#f39c12">Warn {{ warn_limit }}</b> / <b style="color:#e74c3c">Fatal {{ fatal_limit }}</b> %
+            </span>
+        </h2>
+        
+        <!-- ТАБЛИЦА (Цикл по акторам) -->
+        <table>
+            <thead>
+                <tr>
+                    <th>Target Profile</th>
+                    <th>Start Time</th>
+                    <th>Duration</th>
+                    <th>Load Config</th>
+                    <th>Actual RPS</th>
+                    <th>Response Time</th> 
+                    <th>Errors</th>
+                    <th>Status</th>
+                    <th>Health</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for it in iterations %}
+                    {% for a in it.actors %}
+                    {% set ev = a.eval %}
+                    <tr {{ ev.row_style | safe }}>
+                        <td>{{ ev.display_name | safe }}</td>
+                        <td>{{ a.start | default(it.start) }}</td>
+                        <td>{{ it.duration | default('?') }}s</td>
+                        <td>{{ ev.load_config | safe }}</td>
+                        <td>{{ ev.rps_display }}</td>
+                        
+                        <!-- Логика JMeter Response Time -->
+                        <td>
+                            {% if a.tool == 'JMETER' and a.stats.avg_rt != '-' %}
+                                {{ a.stats.avg_rt }} ms<br><span style='font-size:0.85em; color:#888;'>(Max: {{ a.stats.max_rt }})</span>
+                            {% elif a.tool == 'TREX' %}
+                                <span style='color:#555;'>N/A</span>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td> 
+                        
+                        <td style="{{ ev.err_style }}">{{ ev.err_display }}</td>
+                        <td><span class="{{ ev.status_cls }}">{{ ev.status_txt }}</span></td>
+                        <td style="text-align:center; font-size:1.2em;">{{ ev.hc_icon | default('-') }}</td>
+                    </tr>
+                    {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <!-- БЛОК АРТЕФАКТОВ И ГРАФИКОВ (Data Plane Analysis) -->
+        <h2>Data Plane Analysis & Artifacts</h2>
+        
+        {% for it in iterations %}
+            <div class="iter-card">
+                <div class="iter-header">
+                    <span class="iter-title">Iteration #{{ it.id }} Analysis</span>
+                </div>
+                <div class="iter-body">
+                    {% for a in it.actors %}
+                        <div style="margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:10px;">
+                            <div style="font-weight:bold; color:#555; margin-bottom:5px; font-size:13px;">
+                                <span style="color:#2980b9;">{{ a.tool }}</span> - {{ a.log }}
+                            </div>
+                            
+                            <!-- Вывод кнопок-ссылок -->
+                            <div class="btn-group">
+                                {% for art in a.artifacts %}
+                                    <a href="{{ art.link }}" class="btn {{ art.style | default('btn') }}" target="_blank">{{ art.name }}</a>
+                                {% endfor %}
+                            </div>
+                            
+                            <!-- ВРЕЗКА ГРАФИКА ECHARTS -->
+                            {% if a.tool == 'TREX' and a.stats.chart_data %}
+                                {% set c_data = a.stats.chart_data %}
+                                {% if c_data.x_usec | length > 0 %}
+                                    <div class="chart-container" id="chart-{{ it.id }}-{{ loop.index }}"></div>
+                                    <script>
+                                        document.addEventListener("DOMContentLoaded", function() {
+                                            var chartElem = document.getElementById('chart-{{ it.id }}-{{ loop.index }}');
+                                            if (chartElem) {
+                                                var myChart = echarts.init(chartElem);
+                                                myChart.setOption({
+                                                    title: { text: 'Latency Distribution ({{ a.eval.load_config | striptags }})', textStyle: { fontSize: 14 } },
+                                                    tooltip: { trigger: 'axis' },
+                                                    xAxis: { 
+                                                        type: 'category', 
+                                                        data: {{ c_data.x_usec | tojson }}, 
+                                                        name: 'µs',
+                                                        axisLabel: { rotate: 45 }
+                                                    },
+                                                    yAxis: { type: 'value', name: 'Pkts' },
+                                                    series: [{ 
+                                                        data: {{ c_data.y_count | tojson }}, 
+                                                        type: 'bar', 
+                                                        itemStyle: { color: '#34495e' } 
+                                                    }]
+                                                });
+                                            }
+                                        });
+                                    </script>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+        {% endfor %}
+
+        <!-- ОСТАЛЬНЫЕ БЛОКИ (Health & Logs) -->
+        {% if target_health_section %}
+            {{ target_health_section | safe }}
+        {% endif %}
+
+        <h2>Session Details (Log)</h2>
+        {{ log_section | safe }}
+
+        <div class="footer">
+            Generated by PMI Load Testing Orchestrator | {{ gen_date }}
+        </div>
+    </div>
+</div>
+</body>
+</html>

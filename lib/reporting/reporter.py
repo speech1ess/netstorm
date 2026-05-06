@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import sys
-import os
 import argparse
 import traceback
+from pathlib import Path
 
-pmi_lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if pmi_lib not in sys.path:
-    sys.path.insert(0, pmi_lib)
+# Добавляем корень проекта в sys.path (Tech Debt: перевести на пакетную структуру)
+pmi_lib = Path(__file__).resolve().parent.parent
+if str(pmi_lib) not in sys.path:
+    sys.path.insert(0, str(pmi_lib))
 
 from shared import SharedConfig
 from pmi_logger import Log
@@ -19,70 +20,76 @@ from reporting.strategies.ngfw_strategy import NGFWReportStrategy
 STRATEGIES = {
     'antiddos': DDoSReportStrategy,
     'ngfw': NGFWReportStrategy,
-    'default': DDoSReportStrategy # Фолбэк на старую логику
+    'default': DDoSReportStrategy  # Фолбэк на старую логику
 }
 
+def load_session_config() -> str:
+    """
+    Безопасно определяет тип тестируемого устройства (DUT) из активного конфига.
+    """
+    config_dir = Path(SharedConfig.get('paths.config', '/opt/pmi/config'))
+    state_file = config_dir / ".active_pmi"
+    active_conf_name = "test_program.yaml"
+    
+    # Пытаемся прочитать стейт-файл без блокировки
+    if state_file.exists():
+        try:
+            active_conf_name = state_file.read_text(encoding='utf-8').strip() or active_conf_name
+        except IOError as e:
+            Log.warning(f"[Reporter] Не удалось прочитать {state_file.name}: {e}")
+
+    # Пытаемся загрузить YAML
+    try:
+        active_conf = SharedConfig.load_yaml(active_conf_name)
+        if not active_conf:
+            return 'default'
+            
+        # Спускаемся по словарю безопасно
+        raw_test_type = active_conf.get('program', {}).get('dut', {}).get('type', 'default')
+        return str(raw_test_type).lower()
+        
+    except Exception as e:
+        # Здесь важно не проглотить синтаксическую ошибку YAML
+        Log.error(f"[Reporter] Ошибка загрузки конфигурации {active_conf_name}: {e}")
+        return 'default'
+
+
 def main():
-    # Настраиваем нормальный парсер аргументов командной строки
-    parser = argparse.ArgumentParser(description="PMI Report Generator")
-    parser.add_argument("session_id", nargs="?", help="ID сессии (папка в logs/)")
+    parser = argparse.ArgumentParser(description="PMI Report Generator (Data-Driven Pipeline)")
+    parser.add_argument("session_id", nargs="?", help="ID сессии (имя папки в logs/)")
     parser.add_argument("-t", "--type", type=str, help="Принудительно задать тип отчета (antiddos, ngfw)")
     args = parser.parse_args()
 
-    # Берем session_id из аргументов или из переменной окружения
+    # Определение Session ID
+    import os # Оставляем os только для доступа к env
     session_id = args.session_id or os.environ.get("PMI_RUN_ID")
     if not session_id:
         parser.print_help()
-        Log.error("Error: session_id is required.")
+        Log.error("Error: Обязательный параметр session_id не передан.")
         sys.exit(1)
 
-    Log.info(f"[Reporter] Starting generation for session {session_id}...")
+    Log.info(f"[Reporter] Инициализация генератора отчетов для сессии: {session_id}")
 
-    # 1. Загружаем активный конфиг (по логике ScenarioRunner)
-    try:
-        # Узнаем, какой конфиг сейчас активен
-        config_dir = SharedConfig.get('paths.config', '/opt/pmi/config')
-        state_file = os.path.join(config_dir, ".active_pmi")
-        active_conf_name = "test_program.yaml"
-        
-        if os.path.exists(state_file):
-            with open(state_file, 'r') as f:
-                saved = f.read().strip()
-                if saved: active_conf_name = saved
-
-        # Загружаем его
-        active_conf = SharedConfig.load_yaml(active_conf_name)
-        
-        # Достаем тип DUT
-        raw_test_type = active_conf.get('program', {}).get('dut', {}).get('type', 'default')
-        config_test_type = str(raw_test_type).lower()
-        
-    except Exception as e:
-        Log.warning(f"[Reporter] Could not load config meta. Error: {e}")
-        config_test_type = 'default'
-        active_conf = {}
-
-    # 2. ОПРЕДЕЛЯЕМ ПРИОРИТЕТЫ (CLI флаг бьет YAML конфиг)
+    # Определение стратегии (Фабрика)
     if args.type:
         test_type = args.type.lower()
-        Log.info(f"[Reporter] Strategy OVERRIDDEN by CLI flag: '{test_type}'")
+        Log.info(f"[Reporter] Тип отчета ПЕРЕОПРЕДЕЛЕН через CLI: '{test_type}'")
     else:
-        test_type = config_test_type
+        test_type = load_session_config()
 
-    # 3. Выбираем стратегию
-    StrategyClass = STRATEGIES.get(test_type, STRATEGIES['default'])
-    
-    if test_type not in STRATEGIES:
-        Log.warning(f"[Reporter] Unknown type '{test_type}'. Falling back to default: {StrategyClass.__name__}")
+    StrategyClass = STRATEGIES.get(test_type)
+    if not StrategyClass:
+        Log.warning(f"[Reporter] Неизвестный тип DUT '{test_type}'. Используем fallback: default")
+        StrategyClass = STRATEGIES['default']
     else:
-        Log.info(f"[Reporter] Selected strategy for type '{test_type}': {StrategyClass.__name__}")
+        Log.info(f"[Reporter] Выбрана стратегия '{test_type}': {StrategyClass.__name__}")
 
-    # 4. Запускаем конвейер
+    # Запуск конвейера генерации
     try:
-        strategy = StrategyClass(session_id, active_conf)
+        strategy = StrategyClass(session_id, config={})
         strategy.run_pipeline()
     except Exception as e:
-        Log.error(f"[Reporter] Pipeline crashed: {e}")
+        Log.error(f"[Reporter] Фатальный сбой пайплайна: {e}")
         traceback.print_exc()
         sys.exit(1)
 

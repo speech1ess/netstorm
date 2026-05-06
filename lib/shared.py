@@ -135,9 +135,8 @@ class TrapManager:
 # ═══════════════════════════════════════════════════════════
 def on_exit():
     """
-    Global exit hook.
-    Безопасно порождает независимый (detached) процесс генерации отчета,
-    используя системный вызов setsid (start_new_session=True).
+    Глобальный хук завершения оркестратора.
+    Безопасно порождает независимый (detached) процесс генерации отчета.
     """
     try:
         # Защита от рекурсии: запускаем только если мы - главный Оркестратор
@@ -150,36 +149,40 @@ def on_exit():
 
         base_dir = SharedConfig.get('paths.base', '/opt/pmi')
         
-        # 🟢 Единая точка входа для подсистемы отчетов
-        report_engine_script = os.path.join(base_dir, 'lib', 'reporting', 'cli_runner.py')
+        # 🟢 Жестко переключаемся на твой новый фасад
+        report_engine_script = os.path.join(base_dir, 'lib', 'reporting', 'reporter.py')
 
+        # Fallback для старых веток, если где-то еще не смержили
         if not os.path.exists(report_engine_script):
-            # Fallback для совместимости, пока старые скрипты не выведены из эксплуатации
             report_engine_script = os.path.join(base_dir, 'lib', 'reporting', 'generate_run_summary.py')
 
         if not os.path.exists(report_engine_script):
-            sys.stderr.write(f"⚠️ [Report Engine] Entry point not found: {report_engine_script}\n")
+            sys.stderr.write(f"⚠️ [Report Engine] FATAL: Entry point not found: {report_engine_script}\n")
             return
 
-        # Формируем команду без shell=True (защита от инъекций и лишних форков bash)
+        # 🟢 СТРОГИЙ КОНТРАКТ: Передаем session_id как позиционный аргумент
         cmd = [
             sys.executable, 
             report_engine_script, 
-            "--session", session_id,
-            "--rebuild-index"  # Флаг, говорящий движку обновить индекс после генерации
+            session_id
         ]
         
+        # 🟢 АРХИТЕКТУРНЫЙ ФИКС: Убираем Black Hole.
+        # Пишем stderr отвязанного процесса в лог сессии, чтобы видеть краши репортера
+        log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), session_id)
+        os.makedirs(log_dir, exist_ok=True)
+        crash_log_path = os.path.join(log_dir, f"reporter_crash_{session_id}.log")
+
         # Запуск в режиме Fire-and-Forget
-        # start_new_session=True эквивалентно setsid() в Linux, процесс полностью отрывается от родителя
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True 
-        )
+        with open(crash_log_path, 'a') as err_file:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL, # Обычный вывод глушим
+                stderr=err_file,           # Ошибки пишем на диск
+                start_new_session=True 
+            )
 
     except Exception as e:
-        # Пишем напрямую в системный stderr, так как логгеры на этапе on_exit могут быть уже уничтожены
         sys.stderr.write(f"⚠️ [PMI Exit Hook] FATAL: Could not spawn report engine: {e}\n")
 
 # 🟢 ГЛОБАЛЬНЫЙ ПРЕДОХРАНИТЕЛЬ ДЛЯ ВЕБ-РЕЖИМА

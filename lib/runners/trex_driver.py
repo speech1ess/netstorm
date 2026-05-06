@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import sys
 import time
 import json
+import glob
 import requests
 import warnings
 import ipaddress
@@ -12,6 +14,9 @@ import subprocess
 import importlib.util
 import threading
 import queue
+from pathlib import Path
+from typing import Dict, List, Tuple, Any
+
 
 warnings.filterwarnings("ignore")
 
@@ -246,11 +251,9 @@ class TRexDriver:
         l3_config = self._build_l3_config()
         c = STLClient(verbose_level='error', server=self.trex_ip, sync_port=self.sync_port, async_port=self.async_port)
         
-        import threading
         stop_event = threading.Event()
 
         def cleanup():
-            # 🟢 Обработчик сигнала только взводит флаг
             Log.warning("🔴 [TRex Driver] Caught termination signal. Setting stop flag for STL...")
             stop_event.set()
             
@@ -288,75 +291,131 @@ class TRexDriver:
             start_ts = time.time()
             last_log_ts = 0
 
-            # 🟢 В условии цикла проверяем состояние флага остановки
-            while c.is_traffic_active(ports=self.ports) and not stop_event.is_set():
+            session_peak_bps = 0.0
+
+            while c.is_traffic_active():
                 time.sleep(1)
-                elapsed = int(time.time() - start_ts)
                 now = time.time()
+                elapsed = int(now - start_ts)
 
                 try:
-                    stats = c.get_stats(ports=self.ports)
+                    stats = c.get_stats()
                     
+                    # 1. Проверяем, жив ли фоновый поток телеметрии
                     if hasattr(self, 'telemetry') and self.telemetry.push_url:
-                        if not getattr(self.telemetry, 'worker', None) or not self.telemetry.worker.is_alive():
-                            pass
-                        self.telemetry.push_stl(stats, self.ports)
+                        if not self.telemetry.worker.is_alive():
+                            Log.warning(f"[{elapsed:3d}s] TELEMETRY WORKER IS DEAD!")
+                        self.telemetry.push_astf(stats, getattr(self, 'ports', [])) 
 
                     if now - last_log_ts >= 3:
-                        tx_p, rx_p = self.ports[0], self.ports[1] if len(self.ports) > 1 else self.ports[0]
-                        tx_pps, tx_bps = stats[tx_p].get('tx_pps', 0), stats[tx_p].get('tx_bps', 0)
-                        rx_pps = stats[rx_p].get('rx_pps', 0)
+                        time_delta = now - last_log_ts
+                        total_stats = stats.get('global', stats.get('total', {}))
+                        client = stats.get('traffic', {}).get('client', {})
                         
-                        tx_str = f"{tx_pps/1e6:.2f}M" if tx_pps > 1e6 else f"{tx_pps/1e3:.1f}k"
-                        bps_str = f"{tx_bps/1e9:.1f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
+                        tx_bps = total_stats.get('tx_bps', 0)
+                        rx_bps = total_stats.get('rx_bps', 0)
                         
-                        import sys
+                        if tx_bps == 0: tx_bps = client.get('m_tx_bps', 0)
+                        if rx_bps == 0: rx_bps = client.get('m_rx_bps', 0)
+
+                        # 🟢 ОБНОВЛЯЕМ ПИК
+                        if tx_bps > session_peak_bps:
+                            session_peak_bps = tx_bps
+                            
+                        tcp_attempt = client.get('tcps_connattempt', 0)
+                        tcp_closed = client.get('tcps_closed', 0)
+                        tcp_active = max(0, tcp_attempt - tcp_closed)
+                        tcp_drops = client.get('tcps_drops', 0)
+                        tcp_cps = (tcp_attempt - last_tcp_attempt) / time_delta
+                        
+                        udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
+                        udp_drops = client.get('udps_noportbcast', 0)
+                        udp_cps = (udp_flows - last_udp_flows) / time_delta
+                        
+                        last_tcp_attempt = tcp_attempt
+                        last_udp_flows = udp_flows
+                        
+                        tx_str = f"{tx_bps/1e9:.1f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
+                        rx_str = f"{rx_bps/1e9:.1f}G" if rx_bps > 1e9 else f"{rx_bps/1e6:.1f}M"
+                        
+                        # 2. Принудительный сброс буфера (Flush), чтобы логи не висли в pipe
                         sys.stdout.flush()
                         
-                        Log.info(f"[{elapsed:3d}s] TX: {tx_str} pps ({bps_str}bps) | RX: {rx_pps:.0f} pps")
+                        if elapsed < 3 or (tcp_cps <= 5 and udp_cps <= 5 and tcp_active == 0):
+                            Log.info(f"[{elapsed:3d}s] ASTF INIT | Protocol Detection Phase... | TX: {tx_str}bps | RX: {rx_str}bps")
+                        else:
+                            is_tcp = tcp_cps > 5 or tcp_active > 0
+                            is_udp = udp_cps > 5
+                            
+                            if is_tcp and is_udp:
+                                total_drops = tcp_drops + udp_drops
+                                drop_str = f" | Total Drops: {total_drops}"
+                                Log.info(f"[{elapsed:3d}s] ASTF MIX | TCP Flows: {tcp_active} | UDP CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps{drop_str}")
+                            elif is_udp:
+                                Log.info(f"[{elapsed:3d}s] ASTF UDP | CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps | Total Drops: {udp_drops}")
+                            else:
+                                Log.info(f"[{elapsed:3d}s] ASTF TCP | Active Flows: {tcp_active} | TX: {tx_str}bps | RX: {rx_str}bps | Total Drops: {tcp_drops}")                        
                         last_log_ts = now
-                except STLError: 
-                    pass
+                        
                 except Exception as e:
-                    Log.error(f"[{elapsed:3d}s] STL Stats Error: {e}")
-                    import sys
+                    # 3. Печатаем ВСЕ ошибки без ограничений по времени!
+                    Log.error(f"[{elapsed:3d}s] CRITICAL ASTF Stats Error: {e}")
+                    import traceback
+                    traceback.print_exc() # Выплевываем полный трейсбэк
                     sys.stdout.flush()
 
                 if elapsed > self.duration + 5: 
                     Log.warning("Duration exceeded limit. Breaking loop.")
                     break
 
-            # 🟢 Безопасная процедура завершения в основном потоке
             if stop_event.is_set():
                 Log.warning("STL Traffic loop aborted by Kill Switch. Executing safe shutdown sequence...")
 
             if c.is_connected():
                 c.stop(ports=self.ports)
                 try: 
-                    self.telemetry.push_stl(c.get_stats(ports=self.ports), self.ports)
-                except: 
-                    pass
+                    final_stats = c.get_stats(ports=self.ports)
+                    if hasattr(self, 'telemetry'):
+                        self.telemetry.push_stl(final_stats, self.ports)
+                    
+                    final_stats['custom_peak_bps'] = session_peak_bps
+
+                    # 🟢 СБРОС ФИНАЛЬНОЙ ТЕЛЕМЕТРИИ В JSON
+                    # Используем точное имя, переданное оркестратором (уже лежит в self.telemetry.run_id)
+                    log_name_base = getattr(self.telemetry, 'run_id', 'unknown_run')
+                    
+                    session_id = os.environ.get("PMI_RUN_ID", "unknown_session")
+                    log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), session_id)
+                    os.makedirs(log_dir, exist_ok=True)
+                    
+                    # Формируем имя файла
+                    stats_filename = f"stats_{log_name_base}.json"
+                    
+                    with open(os.path.join(log_dir, stats_filename), 'w', encoding='utf-8') as f:
+                        json.dump(final_stats, f, indent=2)
+                        
+                    Log.info(f"📊 [Telemetry] Final STL stats dumped to {stats_filename}")
+                except Exception as e: 
+                    Log.error(f"⚠️ Failed to dump final JSON telemetry: {e}")
+                    
                 c.release(ports=self.ports)
                 
             if hasattr(self, 'telemetry'):
                 self.telemetry.stop()
-                
+            
             c.disconnect()
             Log.success("TRex STL test finished gracefully.")
 
         except Exception as e:
             Log.error(f"Execution Error: {e}")
-            import sys
             sys.exit(1)
 
     def _run_astf(self):
         c = ASTFClient(server=self.trex_ip, sync_port=self.sync_port, async_port=self.async_port)
         
-        import threading
         stop_event = threading.Event()
 
         def cleanup():
-            # 🟢 Обработчик сигнала ТОЛЬКО ставит флаг. Никакого сетевого I/O!
             Log.warning("🔴 [TRex Driver] Caught termination signal. Setting stop flag...")
             stop_event.set()
             
@@ -376,15 +435,16 @@ class TRexDriver:
             
             c.load_profile(profile)
             Log.info(f"Starting ASTF traffic... CPS: {self.mult_str} x1000, Duration: {self.duration}s")
-            c.start(mult=float(self.mult_str), duration=self.duration)
+            # Добавляем поддержку latency из tunables или по дефолту
+            latency_pps = self.tunables.get('latency_pps', 1000)
+            c.start(mult=float(self.mult_str), duration=self.duration, latency_pps=latency_pps)
             
             start_ts = time.time()
             last_log_ts = 0
-            
             last_tcp_attempt = 0 
             last_udp_flows = 0
+            session_peak_bps = 0.0
 
-            # 🟢 В условии цикла проверяем состояние флага остановки
             while c.is_traffic_active() and not stop_event.is_set():
                 time.sleep(1)
                 now = time.time()
@@ -394,9 +454,8 @@ class TRexDriver:
                     stats = c.get_stats()
                     
                     if hasattr(self, 'telemetry') and self.telemetry.push_url:
-                        if not getattr(self.telemetry, 'worker', None) or not self.telemetry.worker.is_alive():
-                            pass # Worker is optional or failed, keep going
-                        self.telemetry.push_astf(stats, getattr(self, 'ports', [])) 
+                        if getattr(self.telemetry, 'worker', None) and self.telemetry.worker.is_alive():
+                            self.telemetry.push_astf(stats, getattr(self, 'ports', [])) 
 
                     if now - last_log_ts >= 3:
                         time_delta = now - last_log_ts
@@ -408,6 +467,9 @@ class TRexDriver:
                         
                         if tx_bps == 0: tx_bps = client.get('m_tx_bps', 0)
                         if rx_bps == 0: rx_bps = client.get('m_rx_bps', 0)
+                        # 🟢 ОБНОВЛЯЕМ ПИК
+                        if tx_bps > session_peak_bps:
+                            session_peak_bps = tx_bps
                             
                         tcp_attempt = client.get('tcps_connattempt', 0)
                         tcp_closed = client.get('tcps_closed', 0)
@@ -425,9 +487,6 @@ class TRexDriver:
                         tx_str = f"{tx_bps/1e9:.1f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
                         rx_str = f"{rx_bps/1e9:.1f}G" if rx_bps > 1e9 else f"{rx_bps/1e6:.1f}M"
                         
-                        # Принудительный сброс буфера логов
-                        import sys
-                        
                         if elapsed < 3 or (tcp_cps <= 5 and udp_cps <= 5 and tcp_active == 0):
                             Log.info(f"[{elapsed:3d}s] ASTF INIT | Protocol Detection Phase... | TX: {tx_str}bps | RX: {rx_str}bps")
                         else:
@@ -436,36 +495,81 @@ class TRexDriver:
                             
                             if is_tcp and is_udp:
                                 total_drops = tcp_drops + udp_drops
-                                drop_str = f" | Drops: {total_drops}"
+                                drop_str = f" | Total Drops: {total_drops}"
                                 Log.info(f"[{elapsed:3d}s] ASTF MIX | TCP Flows: {tcp_active} | UDP CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps{drop_str}")
                             elif is_udp:
-                                Log.info(f"[{elapsed:3d}s] ASTF UDP | CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps | Drops: {udp_drops}")
+                                Log.info(f"[{elapsed:3d}s] ASTF UDP | CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps | Total Drops: {udp_drops}")
                             else:
-                                Log.info(f"[{elapsed:3d}s] ASTF TCP | Active Flows: {tcp_active} | TX: {tx_str}bps | RX: {rx_str}bps | Drops: {tcp_drops}")                        
-                        last_log_ts = now
+                                Log.info(f"[{elapsed:3d}s] ASTF TCP | Active Flows: {tcp_active} | TX: {tx_str}bps | RX: {rx_str}bps | Total Drops: {tcp_drops}")                        
                         
                         sys.stdout.flush()
+                        last_log_ts = now
 
                 except Exception as e:
                     Log.error(f"[{elapsed:3d}s] ASTF Stats Error: {e}")
-                    import sys
                     sys.stdout.flush()
 
                 if elapsed > self.duration + 5: 
                     Log.warning("Duration exceeded limit. Breaking loop.")
                     break
 
-            # 🟢 Главный цикл завершен (или по таймеру, или по сигналу остановки)
+            # 🟢 ДИАГНОСТИКА: Почему мы вышли из цикла?
             if stop_event.is_set():
-                 Log.warning("Traffic loop aborted by Kill Switch. Executing safe shutdown sequence...")
+                 Log.warning("Traffic loop aborted by Kill Switch (SIGTERM/SIGINT received).")
+            elif elapsed > self.duration + 5:
+                 Log.warning(f"Traffic loop ended by Timeout. Elapsed: {elapsed}s, Limit: {self.duration + 5}s.")
+            elif not c.is_traffic_active():
+                 Log.success(f"Traffic loop ended. TRex finished transmission after {elapsed}s.")
+            else:
+                 Log.error(f"Traffic loop ended abnormally! Unknown reason. Elapsed: {elapsed}s.")
             
-            # Теперь мы безопасно вызываем RPC в контексте главного потока
             if c.is_connected():
                 c.stop()
                 try: 
-                    self.telemetry.push_astf(c.get_stats(), getattr(self, 'ports', []))
-                except: 
-                    pass
+                    final_stats = c.get_stats()
+                    
+                    # =========================================================
+                    # 🟢 DATA-DRIVEN: ЭКСТРАКЦИЯ ТЕГОВ (TRex API Patch)
+                    # =========================================================
+                    try:
+                        # Запрашиваем список активных групп (тегов) у ядра
+                        if hasattr(c, 'get_tg_names'):
+                            tg_names = c.get_tg_names()
+                            if tg_names:
+                                # Делаем тяжелый RPC-запрос только если группы реально есть
+                                tg_stats = c.get_traffic_tg_stats(tg_names)
+                                
+                                # Вшиваем полученную статистику в структуру основного JSON
+                                if 'traffic' in final_stats and 'client' in final_stats['traffic']:
+                                    final_stats['traffic']['client']['tg_names'] = tg_stats
+                                    Log.success("🎯 ASTF TG Stats successfully injected into telemetry payload.")
+                    except Exception as e:
+                        Log.error(f"⚠️ [Driver] Failed to fetch ASTF TG stats via RPC: {e}")
+                    # =========================================================
+
+                    # Телеметрию пушим уже после обогащения объекта (хорошая практика SSoT)
+                    if hasattr(self, 'telemetry'):
+                        self.telemetry.push_astf(final_stats, getattr(self, 'ports', []))
+                    
+                    final_stats['custom_peak_bps'] = session_peak_bps
+
+                    # 🟢 СБРОС ФИНАЛЬНОЙ ТЕЛЕМЕТРИИ В JSON
+                    # Используем точное имя, переданное оркестратором (уже лежит в self.telemetry.run_id)
+                    log_name_base = getattr(self.telemetry, 'run_id', 'unknown_run')
+                    
+                    session_id = os.environ.get("PMI_RUN_ID", "unknown_session")
+                    log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), session_id)
+                    os.makedirs(log_dir, exist_ok=True)
+                    
+                    # Формируем имя файла
+                    stats_filename = f"stats_{log_name_base}.json"
+                    
+                    with open(os.path.join(log_dir, stats_filename), 'w', encoding='utf-8') as f:
+                        json.dump(final_stats, f, indent=2)
+                        
+                    Log.info(f"📊 [Telemetry] Final ASTF stats dumped to {stats_filename}")
+                except Exception as e: 
+                    Log.error(f"⚠️ Failed to dump final JSON telemetry: {e}")
             
             if hasattr(self, 'telemetry'):
                  self.telemetry.stop()
@@ -475,8 +579,8 @@ class TRexDriver:
 
         except Exception as e:
             Log.error(f"Execution Error: {e}")
-            import sys
             sys.exit(1)
+
 # ─────────────────────────────────────────────────────────────
 # 5. УТИЛИТЫ ДАННЫХ
 # ─────────────────────────────────────────────────────────────
