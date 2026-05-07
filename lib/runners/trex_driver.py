@@ -308,53 +308,37 @@ class TRexDriver:
                         self.telemetry.push_astf(stats, getattr(self, 'ports', [])) 
 
                     if now - last_log_ts >= 3:
-                        time_delta = now - last_log_ts
-                        total_stats = stats.get('global', stats.get('total', {}))
-                        client = stats.get('traffic', {}).get('client', {})
+                        total_stats = stats.get('total', {})
                         
                         tx_bps = total_stats.get('tx_bps', 0)
                         rx_bps = total_stats.get('rx_bps', 0)
-                        
-                        if tx_bps == 0: tx_bps = client.get('m_tx_bps', 0)
-                        if rx_bps == 0: rx_bps = client.get('m_rx_bps', 0)
+                        tx_pps = total_stats.get('tx_pps', 0)
+                        rx_pps = total_stats.get('rx_pps', 0)
 
-                        # 🟢 ОБНОВЛЯЕМ ПИК
+                        # 🟢 ИСПОЛЬЗУЕМ АБСОЛЮТНЫЕ СЧЕТЧИКИ ДЛЯ ТОЧНОСТИ (Одометр, а не спидометр)
+                        opackets = total_stats.get('opackets', 0)
+                        ipackets = total_stats.get('ipackets', 0)
+
+                        # 🟢 ВЫЧИСЛЯЕМ L2 ДРОПЫ ПО СУММЕ ПАКЕТОВ (защита от микро-задержек)
+                        drops_total = max(0, opackets - ipackets)
+                        drop_pct = (drops_total / opackets * 100.0) if opackets > 0 else 0.0
+
+                        # ОБНОВЛЯЕМ ПИК
                         if tx_bps > session_peak_bps:
                             session_peak_bps = tx_bps
                             
-                        tcp_attempt = client.get('tcps_connattempt', 0)
-                        tcp_closed = client.get('tcps_closed', 0)
-                        tcp_active = max(0, tcp_attempt - tcp_closed)
-                        tcp_drops = client.get('tcps_drops', 0)
-                        tcp_cps = (tcp_attempt - last_tcp_attempt) / time_delta
+                        # Форматируем биты
+                        tx_str = f"{tx_bps/1e9:.2f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
+                        rx_str = f"{rx_bps/1e9:.2f}G" if rx_bps > 1e9 else f"{rx_bps/1e6:.1f}M"
                         
-                        udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
-                        udp_drops = client.get('udps_noportbcast', 0)
-                        udp_cps = (udp_flows - last_udp_flows) / time_delta
+                        # Форматируем пакеты
+                        tx_p_str = f"{tx_pps/1e6:.2f}M" if tx_pps >= 1e6 else f"{tx_pps/1e3:.1f}K"
+                        rx_p_str = f"{rx_pps/1e6:.2f}M" if rx_pps >= 1e6 else f"{rx_pps/1e3:.1f}K"
                         
-                        last_tcp_attempt = tcp_attempt
-                        last_udp_flows = udp_flows
-                        
-                        tx_str = f"{tx_bps/1e9:.1f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
-                        rx_str = f"{rx_bps/1e9:.1f}G" if rx_bps > 1e9 else f"{rx_bps/1e6:.1f}M"
-                        
-                        # 2. Принудительный сброс буфера (Flush), чтобы логи не висли в pipe
                         sys.stdout.flush()
                         
-                        if elapsed < 3 or (tcp_cps <= 5 and udp_cps <= 5 and tcp_active == 0):
-                            Log.info(f"[{elapsed:3d}s] ASTF INIT | Protocol Detection Phase... | TX: {tx_str}bps | RX: {rx_str}bps")
-                        else:
-                            is_tcp = tcp_cps > 5 or tcp_active > 0
-                            is_udp = udp_cps > 5
-                            
-                            if is_tcp and is_udp:
-                                total_drops = tcp_drops + udp_drops
-                                drop_str = f" | Total Drops: {total_drops}"
-                                Log.info(f"[{elapsed:3d}s] ASTF MIX | TCP Flows: {tcp_active} | UDP CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps{drop_str}")
-                            elif is_udp:
-                                Log.info(f"[{elapsed:3d}s] ASTF UDP | CPS: {udp_cps:.0f} | TX: {tx_str}bps | RX: {rx_str}bps | Total Drops: {udp_drops}")
-                            else:
-                                Log.info(f"[{elapsed:3d}s] ASTF TCP | Active Flows: {tcp_active} | TX: {tx_str}bps | RX: {rx_str}bps | Total Drops: {tcp_drops}")                        
+                        # 🟢 ВЫВОДИМ ДРОПЫ В КОНСОЛЬ
+                        Log.info(f"[{elapsed:3d}s] STL TRAFFIC | TX: {tx_str}bps ({tx_p_str}pps) | RX: {rx_str}bps ({rx_p_str}pps) | Drops: {drop_pct:.4f}%")                        
                         last_log_ts = now
                         
                 except Exception as e:
@@ -375,29 +359,45 @@ class TRexDriver:
                 c.stop(ports=self.ports)
                 try: 
                     final_stats = c.get_stats(ports=self.ports)
+                    
+                    # 🟢 Агрегация L2 пакетов
+                    total = final_stats.get('total', {})
+                    final_stats['tx_pkts'] = total.get('opackets', 0) 
+                    final_stats['rx_pkts'] = total.get('ipackets', 0)
+                    
                     if hasattr(self, 'telemetry'):
                         self.telemetry.push_stl(final_stats, self.ports)
                     
                     final_stats['custom_peak_bps'] = session_peak_bps
 
-                    # 🟢 СБРОС ФИНАЛЬНОЙ ТЕЛЕМЕТРИИ В JSON
-                    # Используем точное имя, переданное оркестратором (уже лежит в self.telemetry.run_id)
+                    # 🟢 ЖЕСТКАЯ АДРЕСАЦИЯ
                     log_name_base = getattr(self.telemetry, 'run_id', 'unknown_run')
-                    
-                    session_id = os.environ.get("PMI_RUN_ID", "unknown_session")
-                    log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), session_id)
-                    os.makedirs(log_dir, exist_ok=True)
-                    
-                    # Формируем имя файла
                     stats_filename = f"stats_{log_name_base}.json"
                     
-                    with open(os.path.join(log_dir, stats_filename), 'w', encoding='utf-8') as f:
-                        json.dump(final_stats, f, indent=2)
-                        
-                    Log.info(f"📊 [Telemetry] Final STL stats dumped to {stats_filename}")
-                except Exception as e: 
-                    Log.error(f"⚠️ Failed to dump final JSON telemetry: {e}")
+                    session_id = os.environ.get("PMI_RUN_ID")
+                    if session_id:
+                        log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), session_id)
+                    else:
+                        log_dir = os.getcwd()
                     
+                    os.makedirs(log_dir, exist_ok=True)
+                    save_path = os.path.join(log_dir, stats_filename)
+                    
+                    Log.info(f"💾 Attempting to save JSON artifact to: {save_path}")
+                    
+                    # 🟢 FORCE DISK FLUSH (Фикс Race Condition)
+                    with open(save_path, 'w', encoding='utf-8') as f:
+                        json.dump(final_stats, f, indent=2)
+                        f.flush()            # Сбрасываем буфер Питона в ОС
+                        os.fsync(f.fileno()) # Приказываем ядру Linux сбросить кэш на диск
+
+                    Log.success(f"📊 [Telemetry] Final STL stats successfully dumped to {save_path}")
+
+                except Exception as e: 
+                    # 🟢 ТОТ САМЫЙ EXCEPT, КОТОРЫЙ Я СРЕЗАЛ В ПРОШЛЫЙ РАЗ!
+                    Log.error(f"⚠️ [FATAL I/O ERROR] Failed to process/write JSON: {e}")
+                    
+                # Освобождаем порты ВНЕ блока try-except
                 c.release(ports=self.ports)
                 
             if hasattr(self, 'telemetry'):

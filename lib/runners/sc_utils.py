@@ -223,12 +223,12 @@ def _evaluate_health(runner, step_conf, run_index):
                 with open(stats_path, 'r', encoding='utf-8') as f:
                     stats_data = json.load(f)
                     
-                    tx_pkts = stats_data.get('global', {}).get('tx_pkts', 0)
-                    rx_pkts = stats_data.get('global', {}).get('rx_pkts', 0)
-                    
-                    # Обработка Stateful (ASTF) телеметрии
-                    if tx_pkts == 0 and 'traffic' in stats_data:
-                        client = stats_data.get('traffic', {}).get('client', {})
+                    # 🟢 УМНЫЙ РОУТИНГ ПАРСЕРА ПО ТИПУ ТЕСТА
+                    if 'traffic' in stats_data and 'client' in stats_data['traffic']:
+                        # ---------------------------------------------------------
+                        # РЕЖИМ ASTF (Stateful)
+                        # ---------------------------------------------------------
+                        client = stats_data['traffic']['client']
                         
                         tcp_attempt = client.get('tcps_connattempt', 0)
                         udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
@@ -240,11 +240,6 @@ def _evaluate_health(runner, step_conf, run_index):
                         if 'legit' in tg_names:
                             legit_client = tg_names['legit'].get('client', {})
                             
-                            # Агрегация всех отказов обслуживания (DoS):
-                            # tcps_drops       - потери L4 (переполнение очередей qdisc)
-                            # tcps_conndrops   - исчерпание nf_conntrack ядра Linux
-                            # tcps_timeoutdrop - отвалы сессий по таймауту
-                            # udps_keepdrops   - отброшенные UDP
                             absolute_drops = (
                                 legit_client.get('tcps_drops', 0) +
                                 legit_client.get('tcps_conndrops', 0) +
@@ -283,6 +278,22 @@ def _evaluate_health(runner, step_conf, run_index):
                                 absolute_drops = raw_absolute_drops
                                 
                             rx_pkts = max(0, tx_pkts - absolute_drops)
+                    else:
+                        # ---------------------------------------------------------
+                        # 🟢 РЕЖИМ STL (Stateless L2)
+                        # ---------------------------------------------------------
+                        # Забираем ключи, которые мы заботливо добавили в драйвере
+                        tx_pkts = stats_data.get('tx_pkts', 0)
+                        rx_pkts = stats_data.get('rx_pkts', 0)
+                        
+                        # Фоллбэк на всякий случай (для старых логов)
+                        if tx_pkts == 0 and rx_pkts == 0:
+                            total = stats_data.get('total', {})
+                            tx_pkts = total.get('opackets', total.get('tx_pkts', 0))
+                            rx_pkts = total.get('ipackets', total.get('rx_pkts', 0))
+                            
+                        # Дропы - это физическая разница L2 пакетов
+                        absolute_drops = max(0, tx_pkts - rx_pkts)
 
             except json.JSONDecodeError as e:
                 Log.error(f"❌ [Data Plane] Invalid JSON format in TRex telemetry: {e}")

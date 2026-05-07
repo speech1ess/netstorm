@@ -27,7 +27,8 @@ class NGFWReportStrategy(BaseReportStrategy):
 
         malware_logs = set()
         mult_map = {}
-        hc_list = []
+        hc_map = {}         # 🟢 Вместо списка делаем словарь
+        active_log = None   # 🟢 Трекаем лог текущей итерации
 
         if os.path.exists(self.session_log_path):
             with open(self.session_log_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -36,27 +37,40 @@ class NGFWReportStrategy(BaseReportStrategy):
                         m_cmd = re.search(r'\.py\s+([\d\.]+)\s+\d+\s+([^\s{]+)', line)
                         if m_cmd:
                             mult_val = m_cmd.group(1)
-                            log_base = m_cmd.group(2)
-                            mult_map[log_base + '.log'] = mult_val
-                        if '"inject_malware": 1' in line and m_cmd:
-                            malware_logs.add(log_base + '.log')
+                            log_base = m_cmd.group(2) + '.log' # 🟢 Формируем ключ
+                            
+                            active_log = log_base
+                            mult_map[active_log] = mult_val
+                            
+                            # 🟢 По умолчанию ставим зеленый Pass для новой итерации
+                            hc_map[active_log] = '<span title="CP & DP OK">✅ Pass</span>'
+                            
+                            if '"inject_malware": 1' in line and m_cmd:
+                                malware_logs.add(active_log)
 
-                    elif 'Health Check Passed' in line:
-                        hc_list.append('<span title="CP & DP OK">✅ Pass</span>')
-                    elif 'Health Check Failed' in line or 'Health Check Error' in line:
-                        # Упал Ping/SSH (Control Plane)
-                        hc_list.append('<span title="Control Plane Dead" style="color:#c0392b; font-weight:bold;">❌ CP Fail</span>')
-                    elif 'FATAL:' in line and 'DUT is overwhelmed' in line:
-                        # Упал по дропам трафика (Data Plane)
-                        hc_list.append('<span title="Data Plane Overwhelmed" style="color:#e74c3c; font-weight:bold;">💀 DP Fatal</span>')
+                    # 🟢 Если мы внутри итерации, парсим её Health Check
+                    if active_log:
+                        if 'WARN_LIMIT' in line and 'Превышен' in line:
+                            # Ставим DEGRADED, только если еще не было фатала
+                            if 'CP Fail' not in hc_map[active_log] and 'DP Fatal' not in hc_map[active_log]:
+                                hc_map[active_log] = '<span title="Data Plane Degraded" style="color:#f39c12; font-weight:bold;">⚠️ Degraded</span>'
+                        
+                        elif 'Health Check Failed' in line or 'Health Check Error' in line or ('Ping DUT' in line and 'FAILED' in line):
+                            # Упал Ping/SSH (Control Plane)
+                            hc_map[active_log] = '<span title="Control Plane Dead" style="color:#c0392b; font-weight:bold;">❌ CP Fail</span>'
+                        
+                        elif 'FATAL:' in line and 'DUT is overwhelmed' in line:
+                            # Упал по дропам трафика (Data Plane)
+                            hc_map[active_log] = '<span title="Data Plane Overwhelmed" style="color:#e74c3c; font-weight:bold;">💀 DP Fatal</span>'
 
         for i, it in enumerate(data.get('iterations', [])):
-            hc_icon = hc_list[i] if i < len(hc_list) else ''
             for a in it.get('actors', []):
                 a['is_ips'] = (a['log'] in malware_logs)
                 if a['log'] in mult_map:
                     a['mult'] = mult_map[a['log']]
-                a['hc_icon'] = hc_icon 
+                
+                # 🟢 Забираем иконку строго по имени лога, никаких смещений индексов
+                a['hc_icon'] = hc_map.get(a['log'], '') 
 
         return data
 
@@ -198,6 +212,11 @@ class NGFWReportStrategy(BaseReportStrategy):
                                 if ports > 0:
                                     lat_ms = (lat_sum / ports) / 1000.0  # Конвертируем usec в ms
                             stats['latency_ms'] = lat_ms
+                        else:
+                            # 🟢 ВОТ ОНО! ОТДАЕМ ПАКЕТЫ ДЛЯ STL-ТЕСТОВ!
+                            total = jdata.get('total', {})
+                            stats['tx_pkts'] = jdata.get('tx_pkts') or total.get('opackets', 0)
+                            
                 except Exception as e:
                     Log.error(f"[{self.__class__.__name__}] Failed to parse exact TG drops from JSON: {e}")
 
@@ -206,6 +225,9 @@ class NGFWReportStrategy(BaseReportStrategy):
                 raw_bps = kpi.get('max_tx_bps', 0)
                 stats['max_tx_bps_raw'] = raw_bps 
                 stats['max_tx_bw'] = f"{raw_bps / 1e9:.2f} Gbps" if raw_bps >= 1e9 else f"{raw_bps / 1e6:.2f} Mbps"
+                # 🟢 ЗАБИРАЕМ ДРОПЫ ИЗ АНАЛИЗАТОРА
+                stats['astf_drops'] = kpi.get('drops_total', 0)
+                stats['drop_pct'] = kpi.get('drop_pct', 0.0)
                 
                 # 🟢 Забираем метрику пакетов
                 stats['pps'] = kpi.get('max_tx_pps', 0)
@@ -213,6 +235,22 @@ class NGFWReportStrategy(BaseReportStrategy):
                 stats['chart_data'] = analyzer.get_latency_series()
                 stats['latency_avg'] = kpi.get('avg_latency_ms', 0)
                 stats['jitter'] = kpi.get('jitter_usec', 0)
+                # 🟢 DATA-DRIVEN: Парсим Time-Series для долгих тестов на емкость (MAX_CC)
+                time_series = {'time_s': [], 'active_flows': [], 'drops': []}
+                if 'max_cc' in str(log_path).lower():
+                    try:
+                        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            for line in f:
+                                if 'Active Flows:' in line:
+                                    # Ищем паттерн: [ 124s] ASTF TCP | Active Flows: 1258674 | ... Total Drops: 0
+                                    m = re.search(r'\[\s*(\d+)s\].*?Active Flows:\s*(\d+).*?Total Drops:\s*(\d+)', line)
+                                    if m:
+                                        time_series['time_s'].append(int(m.group(1)))
+                                        time_series['active_flows'].append(int(m.group(2)))
+                                        time_series['drops'].append(int(m.group(3)))
+                    except Exception as e:
+                        Log.warning(f"Failed to parse time-series from {log_path}: {e}")
+                stats['time_series'] = time_series
             else:
                 Log.warning(f"[{self.__class__.__name__}] JSON artifact not found: {source_json}")
                 stats.update({'astf_drops': 0, 'drop_pct': 0.0, 'max_tx_bps_raw': 0, 'max_tx_bw': "0 bps", 'chart_data': {"x_usec": [], "y_count": []}})
@@ -283,7 +321,9 @@ class NGFWReportStrategy(BaseReportStrategy):
 
         elif actor['tool'] == 'TREX':
             mult = actor.get('mult', '?')
-            ev['load_config'] = f"<b>TREX</b>: {mult}x 1000 cps" 
+            # 🟢 ФИКС: Умная подстановка pps/cps
+            unit = "pps" if ('UDP_PPS' in p_name or 'STL' in p_name) else "cps"
+            ev['load_config'] = f"<b>TREX</b>: {mult}x 1000 {unit}"
             
             tx_bw = stats.get('max_tx_bw', '0 bps')
             drops = stats.get('astf_drops', 0)
@@ -320,6 +360,26 @@ class NGFWReportStrategy(BaseReportStrategy):
                     else:
                         ev['status_txt'], ev['status_cls'] = "BYPASSED", "status-fail"
                         ev['err_style'] = "color:#e74c3c; font-weight:bold;"
+            # 🟢 НОВАЯ ЛОГИКА: Обработка тестов на исчерпание емкости (MAX_CC)
+            elif 'MAX_CC' in p_name:
+                ts_flows = stats.get('time_series', {}).get('active_flows', [])
+                max_cc_val = max(ts_flows) if ts_flows else 0
+                
+                # Форматируем в миллионы, если число большое, для красоты
+                cc_formatted = f"{max_cc_val/1e6:.2f}M" if max_cc_val >= 1e6 else f"{max_cc_val:,.0f}".replace(',', ' ')
+                
+                if drop_pct >= fatal_limit:
+                    # Потолок достигнут и пробит
+                    ev['status_txt'], ev['status_cls'] = "LIMIT FOUND", "status-pass" # Ставим зеленый/нейтральный класс, т.к. это успех теста
+                    ev['err_style'] = "color:#8e44ad; font-weight:bold;" # Фиолетовый цвет для выделения
+                    ev['err_display'] = f"Capped at ~{cc_formatted} CC<br><span style='font-size:0.8em; color:#e74c3c;'>{drops} total drops</span>"
+                    ev['hc_icon'] = '<span title="State Table Exhausted (Target Reached)" style="color:#8e44ad; font-size:1.2em;">🚧</span>'
+                else:
+                    # Влили всё, фаервол не упал
+                    ev['status_txt'], ev['status_cls'] = "NOT REACHED", "status-warning" # Желтый, т.к. нужно увеличивать таргет
+                    ev['err_style'] = "color:#27ae60; font-weight:bold;"
+                    ev['err_display'] = f"Peak: {cc_formatted} CC<br><span style='font-size:0.8em; color:#7f8c8d;'>No drops, table not full</span>"
+                    ev['hc_icon'] = '<span title="Capacity Not Reached" style="color:#27ae60; font-size:1.2em;">✅</span>'
             else:
                 ev['err_display'] = f"Drops: {drops} ({format_pct(drop_pct)}%)" 
                 
@@ -344,8 +404,11 @@ class NGFWReportStrategy(BaseReportStrategy):
         
         # 2. Определяем Data-Driven стратегию рендера
         is_cc_test = '[SYN6' in str(base_title)
-        is_cps_test = ('[SYN' in str(base_title) or '[RS' in str(base_title)) and not is_cc_test
-        primary_metric_label = "Max Concurrent Connections" if is_cc_test else "Peak Connection Rate" if is_cps_test else "Peak Throughput"
+        is_stl_test = 'UDP_PPS' in str(base_title) or 'STL' in str(base_title)
+        # 🟢 ФИКС: CPS тест не должен триггериться на STL-тесты (даже если там есть SYN)
+        is_cps_test = ('[SYN' in str(base_title) or '[RS' in str(base_title)) and not is_cc_test and not is_stl_test
+        
+        primary_metric_label = "Max Concurrent Connections" if is_cc_test else "Peak Connection Rate" if is_cps_test else "Peak Forwarding Rate" if is_stl_test else "Peak Throughput"
 
         overview_rows = ""
         artifacts_section_html = ""
@@ -360,13 +423,19 @@ class NGFWReportStrategy(BaseReportStrategy):
 
         # 3. Вычисляем глобальный Peak для шапки
         for it in data.get('iterations', []):
+            duration = int(it.get('duration', 60))
             for a in it.get('actors', []):
                 if a['tool'] == 'TREX':
-                    if is_cps_test or is_cc_test:
-                        try:
-                            val = float(a.get('mult', 0)) * 1000
-                        except ValueError:
-                            val = 0
+                    if is_cps_test:
+                        try: val = float(a.get('mult', 0)) * 1000
+                        except ValueError: val = 0
+                    elif is_cc_test:
+                        ts_flows = a.get('stats', {}).get('time_series', {}).get('active_flows', [])
+                        val = max(ts_flows) if ts_flows else 0
+                    elif is_stl_test:
+                        # 🟢 ФИКС: Считаем средний PPS = Пакеты / Время
+                        tx_pkts = a.get('stats', {}).get('tx_pkts', 0)
+                        val = (tx_pkts / duration) if duration > 0 else 0
                     else:
                         val = a.get('stats', {}).get('max_tx_bps_raw', 0)
                         
@@ -381,13 +450,16 @@ class NGFWReportStrategy(BaseReportStrategy):
             peak_str = f"{peak_val:,.0f} CPS".replace(',', ' ')
         elif is_cc_test:
             peak_str = f"{peak_val:,.0f} CC".replace(',', ' ')
+        elif is_stl_test:
+            # 🟢 ФИКС: Выводим Kpps / Mpps в шапку
+            peak_str = f"{peak_val/1e6:.2f} Mpps" if peak_val >= 1e6 else f"{peak_val/1e3:.2f} Kpps"
         else:
             peak_str = f"{peak_val/1e9:.2f} Gbps" if peak_val >= 1e9 else f"{peak_val/1e6:.2f} Mbps" if peak_val >= 1e6 else f"{peak_val/1e3:.2f} Kbps" if peak_val >= 1e3 else "0 bps"
-
         peak_color = "#333333"
         peak_html = f'<span style="color: {peak_color}; font-weight: 800;">{peak_str}</span>'
 
-        if behavior == 'stepper':
+        # 🟢 ФИКС: Отключаем рендер линейного графика для STL-тестов
+        if behavior == 'stepper' and not is_stl_test:
             trend_x_target, trend_y_main, trend_y_drops = [], [], []
             
             # 🟢 DATA-DRIVEN: Динамические лейблы осей и графиков в зависимости от теста
@@ -484,7 +556,8 @@ class NGFWReportStrategy(BaseReportStrategy):
                     'y_drops': json.dumps(trend_y_drops), 'knee_x': knee_x, 'peak_val': peak_val_str 
                 }
 
-        elif behavior == 'binary':
+        # 🟢 ФИКС: Рендерим сертификат для Binary Search И для STL Stepper тестов!
+        elif behavior == 'binary' or (behavior == 'stepper' and is_stl_test):
             max_pass_val, max_tx_pps, max_pass_bps = 0, 0, 0
             max_pass_mult = "N/A"
             
@@ -492,16 +565,26 @@ class NGFWReportStrategy(BaseReportStrategy):
                 for a in it.get('actors', []):
                     if a['tool'] == 'TREX' and a.get('eval', {}).get('status_txt') in ['PASS', 'SECURED']:
                         
-                        val = float(a.get('mult', 0)) * 1000 if (is_cps_test or is_cc_test) else a.get('stats', {}).get('max_tx_bps_raw', 0)
+                        # 🟢 Идеальный расчет Average PPS для сертификата
+                        if is_stl_test:
+                            tx_pkts = a.get('stats', {}).get('tx_pkts', 0)
+                            val = (tx_pkts / int(it.get('duration', 60))) if int(it.get('duration', 60)) > 0 else 0
+                        else:
+                            val = float(a.get('mult', 0)) * 1000 if (is_cps_test or is_cc_test) else a.get('stats', {}).get('max_tx_bps_raw', 0)
                         
                         if val >= max_pass_val:
                             max_pass_val = val
                             max_pass_mult = str(a.get('mult', '?'))
-                            max_tx_pps = a.get('stats', {}).get('pps', 0)
+                            # 🟢 Сохраняем честный PPS!
+                            max_tx_pps = val 
                             max_pass_bps = a.get('stats', {}).get('max_tx_bps_raw', 0)
 
             # Каскад рендеринга текста сертификата
-            if is_cps_test:
+            if is_stl_test:
+                ndr_title = "Max Forwarding Rate (PPS)"
+                ndr_primary = f"{max_tx_pps/1e6:.2f} Mpps" if max_tx_pps >= 1e6 else f"{max_tx_pps/1e3:.2f} Kpps"
+                ndr_secondary = f"{max_pass_bps/1e9:.2f} Gbps" if max_pass_bps >= 1e9 else f"{max_pass_bps/1e6:.2f} Mbps"
+            elif is_cps_test:
                 ndr_title = "Max Stable Connection Rate"
                 ndr_primary = f"{max_pass_val:,.0f} CPS".replace(',', ' ')
                 ndr_secondary = f"{max_pass_bps/1e6:.2f} Mbps | {max_tx_pps/1e3:.2f} Kpps"
@@ -514,11 +597,14 @@ class NGFWReportStrategy(BaseReportStrategy):
                 ndr_primary = f"{max_pass_val/1e9:.2f} Gbps" if max_pass_val >= 1e9 else f"{max_pass_val/1e6:.2f} Mbps" if max_pass_val >= 1e6 else "0 bps"
                 ndr_secondary = f"{max_tx_pps/1e6:.2f} Mpps" if max_tx_pps >= 1e6 else f"{max_tx_pps/1e3:.2f} Kpps" if max_tx_pps >= 1e3 else "0 pps"
             
+            # Динамический подзаголовок (Откуда мы взяли пик)
+            search_type = "Smart-Stepper Search" if behavior == 'stepper' else "RFC 2544 / Binary Search"
+            
             unified_chart_html = f"""
             <div class="iter-card" style="border-top: 4px solid #27ae60; box-shadow: 0 4px 15px rgba(39, 174, 96, 0.1);">
                 <div class="iter-header" style="background: #eafaf1; display:flex; justify-content:space-between; align-items:center;">
                     <span class="iter-title" style="color: #27ae60; font-size: 18px;">🏆 Certificate of Performance</span>
-                    <span style="font-family:monospace; color:#7f8c8d; font-size: 12px;">RFC 2544 / Binary Search</span>
+                    <span style="font-family:monospace; color:#7f8c8d; font-size: 12px;">{search_type}</span>
                 </div>
                 <div class="iter-body" style="text-align: center; padding: 40px 20px;">
                     <div style="font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 10px;">{ndr_title}</div>
@@ -611,9 +697,48 @@ class NGFWReportStrategy(BaseReportStrategy):
                     <div style="display:flex; gap:10px;">{btns}</div>
                 """
 
-                if behavior == 'single' and a['tool'] == 'TREX' and st.get('chart_data') and st['chart_data'].get('x_usec'):
+                if behavior == 'single' and a['tool'] == 'TREX':
                     chart_id = f"chart-{it['id']}-{a['log'].replace('.log', '')}"
-                    iter_artifacts_inner += f"""
+                    
+                    # 🟢 СЦЕНАРИЙ А: Это тест MAX_CC. Рисуем Time-Series (Время vs Сессии)
+                    if st.get('time_series') and len(st['time_series']['time_s']) > 0:
+                        ts = st['time_series']
+                        iter_artifacts_inner += f"""
+                        <div style="margin-top: 15px; border: 1px solid #e0e0e0; background: #ffffff; padding: 15px; border-radius: 4px;">
+                            <div style="display: flex; gap: 20px; font-family: monospace; margin-bottom: 5px; font-size: 13px; color: #2c3e50;">
+                                <div>PEAK ACTIVE FLOWS: <strong style="color: #2980b9;">{max(ts['active_flows']):,.0f}</strong></div>
+                                <div>TOTAL DROPS: <strong style="color: #e74c3c;">{st.get('astf_drops', 0):,.0f}</strong></div>
+                            </div>
+                            <div id="{chart_id}" style="width: 100%%; height: 350px;"></div>
+                            <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+                            <script>
+                                document.addEventListener("DOMContentLoaded", function() {{
+                                    var chartElem = document.getElementById('{chart_id}');
+                                    if(chartElem) {{
+                                        echarts.init(chartElem).setOption({{
+                                            title: {{ text: 'Capacity Degradation over Time', textStyle: {{ fontSize: 14, color: '#7f8c8d' }} }},
+                                            tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }} }},
+                                            legend: {{ data: ['Active Connections', 'Packet Drops'], bottom: 0 }},
+                                            grid: {{ top: 40, bottom: 60, left: 60, right: 60 }},
+                                            dataZoom: [ {{ type: 'inside' }}, {{ type: 'slider', bottom: 25, height: 20 }} ],
+                                            xAxis: {{ type: 'category', data: {json.dumps(ts['time_s'])}, name: 'Time (s)', axisLine: {{ lineStyle: {{ color: '#bdc3c7' }} }} }},
+                                            yAxis: [
+                                                {{ type: 'value', name: 'Connections', position: 'left', axisLabel: {{ color: '#2980b9' }}, splitLine: {{ lineStyle: {{ type: 'dashed', color: '#ecf0f1' }} }} }},
+                                                {{ type: 'value', name: 'Drops', position: 'right', axisLabel: {{ color: '#e74c3c' }}, splitLine: {{ show: false }} }}
+                                            ],
+                                            series: [
+                                                {{ name: 'Active Connections', type: 'line', smooth: true, symbol: 'none', itemStyle: {{ color: '#2980b9' }}, lineStyle: {{ width: 3 }}, areaStyle: {{ opacity: 0.1 }}, data: {json.dumps(ts['active_flows'])} }},
+                                                {{ name: 'Packet Drops', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', itemStyle: {{ color: '#e74c3c' }}, lineStyle: {{ type: 'dashed', width: 2 }}, data: {json.dumps(ts['drops'])} }}
+                                            ]
+                                        }});
+                                    }}
+                                }});
+                            </script>
+                        </div>
+                        """
+                    # 🟢 СЦЕНАРИЙ Б: Обычный Single-тест. Рисуем старую гистограмму задержек
+                    elif st.get('chart_data') and st['chart_data'].get('x_usec'):
+                        iter_artifacts_inner += f"""
                         <div style="margin-top: 15px; border: 1px solid #e0e0e0; background: #ffffff; padding: 15px; border-radius: 4px;">
                             <div style="display: flex; gap: 20px; font-family: monospace; margin-bottom: 5px; font-size: 13px; color: #2c3e50;">
                                 <div>AVG LATENCY: <strong>{st.get('latency_avg', 0)} ms</strong></div>
@@ -638,7 +763,7 @@ class NGFWReportStrategy(BaseReportStrategy):
                                 }});
                             </script>
                         </div>
-                    """
+                        """
                 iter_artifacts_inner += "</div>"
             artifacts_section_html += f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Iteration #{it["id"]} Artifacts</span></div><div class="iter-body">{iter_artifacts_inner}</div></div>'
 
@@ -665,7 +790,6 @@ class NGFWReportStrategy(BaseReportStrategy):
         except Exception: 
             pass
         
-        # 🟢 ЗДЕСЬ МЫ БОЛЬШЕ НИЧЕГО НЕ ВЫЧИСЛЯЕМ (Всё уже сделано наверху)
         # 2. Безопасно извлекаем DTO
         dut_label = meta.get('dut_label')
         description = meta.get('description')

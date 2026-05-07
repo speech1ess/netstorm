@@ -234,28 +234,28 @@ scenarios:
               astf_http_cps: { overridemult: { start: 50, step: 10 } }
     SYN4_UDP_PPS_STEP:
       type: "series"
-      label: "UDP PPS Capacity Smart-Stepper Search [SYN4_UDP_PPS_STEP] (1M -> 14M PPS)"
+      label: "UDP PPS Capacity Smart-Stepper Search [SYN4_UDP_PPS_STEP] (30K --+2K--> 5 steps)"
       prompt: "[INFO]: Ищем аппаратный потолок PPS."
       health_check: true
-      repeats: 10         # Количество ступенек (например, 10 ступенек дойдут до 10M PPS)
+      repeats: 5         # Количество ступенек (например, 10 ступенек дойдут до 10M PPS)
       interval: 30        # Длительность одной ступеньки
       template:
         duration: 180
         actors:
           - tool: "trex"
             profile: "udp_flood_64b"
-            overridemult: { start: 1000, step: 1000 }            
+            overridemult: { start: 30, step: 2 }            
       presets:
         low_res:
-          label: "🐢 Грубый поиск (Шаг 1M PPS)"
+          label: "🐢 40K --+2K--> 5 steps"
           overrides:
             actors:
-              udp_flood_64b: { overridemult: { start: 1000, step: 1000 } }
+              udp_flood_64b: { overridemult: { start: 40, step: 2 } }
         high_res:
-          label: "🏃 Точный поиск (Шаг 500k PPS)"
+          label: "🏃 45K --+1K--> 5 steps"
           overrides:
             actors:
-              udp_flood_64b: { overridemult: { start: 1000, step: 500 } }
+              udp_flood_64b: { overridemult: { start: 45, step: 1 } }
     SYN5_TCP_BIN:
       type: "series"
       label: "TCP CPS Limit Binary Search [SYN5_TCP_BIN] (10k-200k CPS)"
