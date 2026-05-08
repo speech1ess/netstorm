@@ -273,14 +273,14 @@ scenarios:
           profile: "astf_tcp_cps"  
       presets:
         limit_100k:
-          label: "🏢 Enterprise (Max 100k CPS, precision 1)"
-          overrides: { series: { type: "binary_search", min: 10, max: 100, precision: 1 } }
+          label: "🏢 Enterprise (Max 50k CPS, precision 1)"
+          overrides: { series: { type: "binary_search", min: 10, max: 50, precision: 1 } }
         limit_500k:
-          label: "☁️ DataCenter (Max 500k CPS, precision 1)"
-          overrides: { series: { type: "binary_search", min: 10, max: 500, precision: 1 } }
+          label: "☁️ DataCenter (Max 100k CPS, precision 1)"
+          overrides: { series: { type: "binary_search", min: 20, max: 100, precision: 1 } }
         limit_mellanox:
-          label: "🚀 Mellanox Mode (Max 2M CPS, precision 5)"
-          overrides: { series: { type: "binary_search", min: 100, max: 2000, precision: 5 } }
+          label: "🚀 Mellanox Mode (Max 500k CPS, precision 5)"
+          overrides: { series: { type: "binary_search", min: 100, max: 500, precision: 5 } }
     SYN6_MAX_CC:
       label: "Max Concurrent Connections Limit Search [SYN6_MAX_CC] (State Table Exhaustion)"
       prompt: "[INFO]: Ищем предел оперативной памяти (RAM) и таблицы трансляций NGFW."
@@ -328,7 +328,7 @@ scenarios:
           overrides: { series: { type: "binary_search", min: 1, max: 12, precision: 1 } }
         limit_30g:
           label: "🥈 Mid-Range (Up to 30 Gbps, precision: 1)"
-          overrides: { series: { type: "binary_search", min: 10, max: 35, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 5, max: 35, precision: 1 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps, precision: 2)"
           overrides: { series: { type: "binary_search", min: 20, max: 60, precision: 2 } }
@@ -353,7 +353,7 @@ scenarios:
           overrides: { series: { type: "binary_search", min: 1, max: 12, precision: 1 } }
         limit_30g:
           label: "🥈 Mid-Range (Up to 30 Gbps), precision: 1"
-          overrides: { series: { type: "binary_search", min: 10, max: 35, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 5, max: 35, precision: 1 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps), precision: 2"
           overrides: { series: { type: "binary_search", min: 20, max: 60, precision: 2 } }

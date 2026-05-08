@@ -32,7 +32,9 @@ def flatten_scenarios(raw_scenarios):
 
 def apply_preset_overrides(base_conf, overrides, is_custom=False):
     """Умный мерж: ищет акторов в корне, в template или в step"""
-    
+    if not overrides:
+        return
+
     # 🟢 ЕСЛИ ЭТО КАСТОМ - ВРУБАЕМ ЛОГИРОВАНИЕ
     if is_custom:
         from pmi_logger import Log # Убеждаемся, что логгер тут работает
@@ -40,19 +42,28 @@ def apply_preset_overrides(base_conf, overrides, is_custom=False):
         Log.info(f"Входящий JSON от фронта: {overrides}")
         Log.info("========================================================\n")
 
-    for key, val in overrides.items():
-        if key != 'actors': base_conf[key] = val
-        
-    # Ищем, где реально лежит список акторов
+    # 1. Ищем, где реально лежат настройки теста (в корне, в template или в step)
     target_block = base_conf
-    if 'template' in base_conf and 'actors' in base_conf['template']:
+    if 'template' in base_conf:
         target_block = base_conf['template']
-    elif 'step' in base_conf and 'actors' in base_conf['step']:
+    elif 'step' in base_conf:
         target_block = base_conf['step']
 
+    # 2. Распределяем параметры верхнего уровня
+    for key, val in overrides.items():
+        if key == 'actors':
+            continue # Акторы мы будем мержить отдельно ниже
+            
+        # Умный роутинг длительности (кладем туда же, где акторы)
+        if key == 'duration':
+            target_block['duration'] = val
+        else:
+            base_conf[key] = val
+
+    # 3. Мержим акторов
     if 'actors' in overrides and 'actors' in target_block:
         actor_overrides = overrides['actors']
-        for actor in target_block['actors']:
+        for actor in target_block.get('actors', []):
             # Ищем совпадение по имени или по профилю
             prof = actor.get('profile')
             name = actor.get('name')
@@ -195,11 +206,12 @@ def _evaluate_health(runner, step_conf, run_index):
             Log.success(f"✅ [Control Plane] SSH (Port 22) to DUT ({mgmt_ip}) from '{target_netns}' is OPEN.")
 
     # =========================================================================
-    # 2. ПРОВЕРКА DATA PLANE (TRex JSON Stats & Linux Network Stack Analysis)
+    # 2. ПРОВЕРКА DATA PLANE (TRex JSON Stats via Unified Analyzer)
     # =========================================================================
     tx_pkts = 0
     rx_pkts = 0
     absolute_drops = 0
+    drop_pct = 0.0
     stats_found = False
     
     log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), runner.session_id)
@@ -220,86 +232,34 @@ def _evaluate_health(runner, step_conf, run_index):
         if os.path.exists(stats_path):
             stats_found = True
             try:
-                with open(stats_path, 'r', encoding='utf-8') as f:
-                    stats_data = json.load(f)
+                # 🟢 ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ: Используем тот же Анализатор, что и Репортер
+                from reporting.analyzers.trex_analyzer import TRexRunAnalyzer
+                analyzer = TRexRunAnalyzer(stats_path)
+                
+                if analyzer.is_valid:
+                    kpi = analyzer.get_kpi_summary()
+                    absolute_drops = kpi.get('drops_total', 0)
+                    drop_pct = kpi.get('drop_pct', 0.0) # Честный процент (например, 0.0061)
                     
-                    # 🟢 УМНЫЙ РОУТИНГ ПАРСЕРА ПО ТИПУ ТЕСТА
-                    if 'traffic' in stats_data and 'client' in stats_data['traffic']:
-                        # ---------------------------------------------------------
-                        # РЕЖИМ ASTF (Stateful)
-                        # ---------------------------------------------------------
-                        client = stats_data['traffic']['client']
-                        
-                        tcp_attempt = client.get('tcps_connattempt', 0)
-                        udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
-                        tx_pkts = tcp_attempt + udp_flows
-                        
-                        tg_names = client.get('tg_names', {})
-                        
-                        # 🟢 DATA-DRIVEN ПЛАН А: Извлечение аппаратных тегов с учетом иерархии
-                        if 'legit' in tg_names:
-                            legit_client = tg_names['legit'].get('client', {})
-                            
-                            absolute_drops = (
-                                legit_client.get('tcps_drops', 0) +
-                                legit_client.get('tcps_conndrops', 0) +
-                                legit_client.get('tcps_timeoutdrop', 0) +
-                                legit_client.get('udps_keepdrops', 0)
-                            )
+                    # Читаем TX/RX для вывода в лог
+                    with open(stats_path, 'r', encoding='utf-8') as f:
+                        stats_data = json.load(f)
+                        if 'traffic' in stats_data and 'client' in stats_data['traffic']:
+                            client = stats_data['traffic']['client']
+                            tcp_attempt = client.get('tcps_connattempt', 0)
+                            udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
+                            tx_pkts = tcp_attempt + udp_flows
                             rx_pkts = max(0, tx_pkts - absolute_drops)
-                            Log.info(f"🛡️ [IPS Bypass] Found 'legit' tag. Exact legit drops (Total DoS): {absolute_drops}")
-                            
-                        # ⚠️ ПЛАН Б: Эвристический фоллбэк
                         else:
-                            tcp_drops = client.get('tcps_drops', 0) + client.get('tcps_conndrops', 0)
-                            udp_drops = client.get('udps_noportbcast', 0)
-                            raw_absolute_drops = tcp_drops + udp_drops
-                            
-                            profile_name = actor.get('profile')
-                            prof_data = runner.conf.get('profiles', {}).get('trex', {}).get(profile_name, {})
-                            
-                            tool_params = copy.deepcopy(prof_data.get('tunables', {}))
-                            tool_params.update(actor.get('tunables', {}))
-                            
-                            if tool_params.get('inject_malware') == 1:
-                                legit_cps = sum(float(p.get('cps', 0)) for p in tool_params.get('pcap_list', []))
-                                malware_cps = sum(float(m.get('cps', 0)) for m in tool_params.get('malware_list', []))
-                                total_cps = legit_cps + malware_cps
-                                
-                                if total_cps > 0:
-                                    malware_ratio = malware_cps / total_cps
-                                    expected_ips_drops = int(tx_pkts * malware_ratio)
-                                    absolute_drops = max(0, raw_absolute_drops - expected_ips_drops)
-                                    Log.warning(f"⚠️ [Data Plane] 'tg_names' missing. Activating HEURISTIC fallback!")
-                                    Log.info(f"📐 [IPS Math] Raw Drops: {raw_absolute_drops} | Expected Malware: {expected_ips_drops} | COMPUTED Legit Drops: {absolute_drops}")
-                                else:
-                                    absolute_drops = raw_absolute_drops
-                            else:
-                                absolute_drops = raw_absolute_drops
-                                
-                            rx_pkts = max(0, tx_pkts - absolute_drops)
-                    else:
-                        # ---------------------------------------------------------
-                        # 🟢 РЕЖИМ STL (Stateless L2)
-                        # ---------------------------------------------------------
-                        # Забираем ключи, которые мы заботливо добавили в драйвере
-                        tx_pkts = stats_data.get('tx_pkts', 0)
-                        rx_pkts = stats_data.get('rx_pkts', 0)
-                        
-                        # Фоллбэк на всякий случай (для старых логов)
-                        if tx_pkts == 0 and rx_pkts == 0:
-                            total = stats_data.get('total', {})
-                            tx_pkts = total.get('opackets', total.get('tx_pkts', 0))
-                            rx_pkts = total.get('ipackets', total.get('rx_pkts', 0))
-                            
-                        # Дропы - это физическая разница L2 пакетов
-                        absolute_drops = max(0, tx_pkts - rx_pkts)
+                            tx_pkts = stats_data.get('tx_pkts', 0)
+                            rx_pkts = stats_data.get('rx_pkts', 0)
+                            if tx_pkts == 0 and rx_pkts == 0:
+                                total = stats_data.get('total', {})
+                                tx_pkts = total.get('opackets', total.get('tx_pkts', 0))
+                                rx_pkts = total.get('ipackets', total.get('rx_pkts', 0))
 
-            except json.JSONDecodeError as e:
-                Log.error(f"❌ [Data Plane] Invalid JSON format in TRex telemetry: {e}")
-                return "FATAL", 0.0, ping_ok
             except Exception as e:
-                Log.error(f"❌ [Data Plane] Failed to parse TRex telemetry JSON: {e}")
+                Log.error(f"❌ [Data Plane] Failed to parse TRex telemetry via Analyzer: {e}")
                 return "FATAL", 0.0, ping_ok
 
     # =========================================================================
@@ -313,7 +273,6 @@ def _evaluate_health(runner, step_conf, run_index):
         Log.error("💀 FATAL: TRex reported 0 TX packets/flows. No traffic was generated.")
         return "FATAL", 0.0, ping_ok
 
-    drop_pct = round((absolute_drops / tx_pkts) * 100.0, 4) if tx_pkts > 0 else 0.0
     Log.info(f"📊 [Data Plane] Total TX (Pkts/Flows): {tx_pkts} | RX: {rx_pkts} | Legit Drops: {absolute_drops} ({drop_pct}%)")
         
     thresholds = dut_conf.get('thresholds') or dut_conf.get('tresholds') or {}

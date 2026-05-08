@@ -13,6 +13,7 @@ try:
     from pmi_logger import Log
     from target_monitor import TargetMonitor
     from tools.target_manager import CONF_BACKEND, NGINX_ENABLED
+    from tools.zabbix_trapper import ZabbixTrapper
 except ImportError:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from shared import Colors, SharedConfig, SharedTrap
@@ -20,6 +21,7 @@ except ImportError:
     try:
         from monitoring.target_monitor import TargetMonitor
         from tools.target_manager import CONF_BACKEND, NGINX_ENABLED
+        from tools.zabbix_trapper import ZabbixTrapper
     except ImportError:
         TargetMonitor = None
         CONF_BACKEND = "backend"
@@ -33,6 +35,7 @@ class ScenarioRunner:
     def __init__(self):
         state_file = os.path.join(SharedConfig.get('paths.config', '/opt/pmi/config'), ".active_pmi")
         active_conf = "test_program.yaml"
+        self.zabbix = ZabbixTrapper(zabbix_ip="10.207.87.13")
         
         if "PMI_CURRENT_CONFIG" in os.environ:
             active_conf = os.environ["PMI_CURRENT_CONFIG"]
@@ -86,6 +89,9 @@ class ScenarioRunner:
         virtual_conf = {"type": "series", "series": target_ids, "interval": interval}
 
         try:
+            # 🟢 ОТБИВКА СТАРТА БАТЧА В ЗАББИКС
+            self.zabbix.notify("trex.status", f"START BATCH: {len(target_ids)} scenarios")
+
             success = sc_logic.execute_scenario_logic(self, "BATCH_RUN", virtual_conf, "Batch Execution", preset_name, is_batch=True)
             if success:
                 Log.success("Batch execution finished successfully.")
@@ -95,6 +101,10 @@ class ScenarioRunner:
             Log.error(f"Batch execution failed: {e}")
             self.cleanup()
             return False
+        finally:
+            # 🔴 ОТБИВКА ФИНИША БАТЧА В ЗАББИКС (сработает всегда)
+            self.zabbix.notify("trex.status", f"STOP BATCH: Finished")
+            time.sleep(2)
 
     # ════════════════════════════════════════════════════════
     # SINGLE RUN (API Adapter)
@@ -161,6 +171,9 @@ class ScenarioRunner:
         time.sleep(0.5)
 
         try:
+            # 🟢 ОТБИВКА СТАРТА В ЗАББИКС
+            self.zabbix.notify("trex.status", f"START: {label}")
+
             success = sc_logic.execute_scenario_logic(self, scenario_id, scenario_conf, label, preset_name, is_batch)
             if success:
                 Log.success(f"Orchestrator finished: {scenario_id}")
@@ -172,6 +185,10 @@ class ScenarioRunner:
         except Exception as e:
             self.cleanup()
             return False
+        finally:
+            # 🔴 ОТБИВКА ФИНИША В ЗАББИКС (сработает всегда, даже при Ctrl+C или ошибке)
+            self.zabbix.notify("trex.status", f"STOP: {label}")
+            time.sleep(2)
 
     # ════════════════════════════════════════════════════════
     # CORE PROCESS EXECUTION
