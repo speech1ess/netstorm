@@ -14,9 +14,9 @@ import subprocess
 import importlib.util
 import threading
 import queue
+import copy  # <-- ДОБАВЛЕНО ДЛЯ СНИМКОВ ПАМЯТИ
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
-
 
 warnings.filterwarnings("ignore")
 
@@ -97,22 +97,37 @@ class TRexTelemetry:
         if ip := mon.get('net', {}).get('ip'):
             port = mon.get('services', {}).get('victoria_api', {}).get('port', 8428)
             self.push_url = f"http://{ip}:{port}/api/v1/import/prometheus"
+            # 🟢 ДОБАВЛЕН ЛОГ: Сразу видим, правильный ли URL
+            Log.info(f"📡 Telemetry Push URL: {self.push_url}") 
+        else:
+            Log.warning("⚠️ Telemetry DISABLED: Monitor IP not found in global.yaml")
 
         # --- ФОНОВЫЙ ВОРКЕР ---
-        self.queue = queue.Queue(maxsize=1000) # Буфер на 1000 метрик, чтобы не съесть память
+        self.queue = queue.Queue(maxsize=1000) 
         if self.push_url:
             self.worker = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker.start()
 
     def _worker_loop(self):
-        """Читает очередь в фоне и шлет метрики по сети. Не блокирует генератор!"""
+        """Читает очередь в фоне и шлет метрики. Пишет ошибки, если база легла."""
         while True:
             try:
                 lines = self.queue.get()
-                if lines is None: break # Сигнал к остановке (Poison Pill)
-                requests.post(self.push_url, data="\n".join(lines), timeout=1)
-            except Exception:
-                pass # Игнорируем сетевые ошибки, главная задача - не упасть
+                if lines is None: break 
+                
+                # 🟢 ФИКС: Обязательный перенос строки в конце payload
+                payload = "\n".join(lines) + "\n"
+                
+                # 🟢 ФИКС: Таймаут увеличен до 2с, чтобы база успела ответить
+                resp = requests.post(self.push_url, data=payload, timeout=2)
+                
+                if resp.status_code >= 400:
+                    Log.error(f"🔴 VictoriaMetrics Error {resp.status_code}: {resp.text}")
+                    
+            except requests.exceptions.Timeout:
+                pass # Сетевые задержки игнорим, чтобы не спамить в консоль
+            except Exception as e:
+                Log.error(f"🔴 Telemetry Worker Exception: {e}")
             finally:
                 self.queue.task_done()
 
@@ -124,12 +139,15 @@ class TRexTelemetry:
             if s := stats.get(port):
                 lbl = f'run_id="{self.run_id}",session="{self.session_id}",profile="{self.profile}",port="{port}"'
                 metrics = {
-                    "pmi_trex_tx_pps": s.get('tx_pps', 0),
-                    "pmi_trex_rx_pps": s.get('rx_pps', 0),
-                    "pmi_trex_tx_bps": s.get('tx_bps', 0),
-                    "pmi_trex_rx_bps": s.get('rx_bps', 0),
+                    "netstorm_stl_tx_pps": s.get('tx_pps', 0),
+                    "netstorm_stl_rx_pps": s.get('rx_pps', 0),
+                    "netstorm_stl_tx_bps": s.get('tx_bps', 0),
+                    "netstorm_stl_rx_bps": s.get('rx_bps', 0),
+                    "netstorm_stl_l2_drops": max(0, s.get('opackets', 0) - s.get('ipackets', 0))
                 }
-                lines.extend([f'{k}{{{lbl}}} {v} {timestamp}' for k, v in metrics.items()])
+                for k, v in metrics.items():
+                    try: lines.append(f'{k}{{{lbl}}} {max(0.0, float(v))} {timestamp}')
+                    except (ValueError, TypeError): pass
         self._send(lines)
 
     def push_astf(self, stats, ports):
@@ -138,28 +156,100 @@ class TRexTelemetry:
         lines = []
         lbl = f'run_id="{self.run_id}",session="{self.session_id}",profile="{self.profile}"'
         
-        if traffic := stats.get('traffic'):
-            client = traffic.get('client', {})
-            metrics = {
-                "pmi_trex_astf_active_flows": client.get('tcps_connattempt', 0) - client.get('tcps_closed', 0),
-                "pmi_trex_astf_cps": client.get('tcps_connattempt', 0),
-                "pmi_trex_astf_tx_bps": client.get('tx_bps', 0),
-                "pmi_trex_astf_rx_bps": client.get('rx_bps', 0),
-                "pmi_trex_astf_err_drop": client.get('tcps_drops', 0)
-            }
-            lines.extend([f'{k}{{{lbl}}} {max(0, v)} {timestamp}' for k, v in metrics.items()])
+        metrics = {}
+
+        # Вытаскиваем словари (с фоллбэками на разные версии TRex)
+        total_stats = stats.get('global', stats.get('total', {}))
+        client = stats.get('traffic', {}).get('client', {})
+
+        # Умный парсинг скорости (Берем из Total, если нет - из Client)
+        l2_tx_bps = total_stats.get('tx_bps', 0)
+        l2_rx_bps = total_stats.get('rx_bps', 0)
+        if l2_tx_bps == 0: l2_tx_bps = client.get('m_tx_bps', 0)
+        if l2_rx_bps == 0: l2_rx_bps = client.get('m_rx_bps', 0)
+
+        # 1. L7 (Application) & General Traffic Stats
+        metrics.update({
+            "netstorm_astf_active_flows": client.get('tcps_connattempt', 0) - client.get('tcps_closed', 0),
+            "netstorm_astf_cps": client.get('tcps_connattempt', 0),
+            "netstorm_astf_tx_bps": l2_tx_bps,
+            "netstorm_astf_rx_bps": l2_rx_bps,
+            "netstorm_astf_l7_drops": client.get('tcps_drops', 0)
+        })
+
+        # 2. L2 (Physical) Stats
+        metrics.update({
+            "netstorm_l2_tx_bps": l2_tx_bps,
+            "netstorm_l2_rx_bps": l2_rx_bps,
+            "netstorm_l2_drop_bps": total_stats.get('rx_drop_bps', 0)
+        })
+
+        # 3. Latency (Парсинг гистограмм по портам, конвертация usec -> ms)
+        if latency := stats.get('latency'):
+            max_delays = []
+            avg_delays = []
+            for port_id, port_data in latency.items():
+                if isinstance(port_data, dict) and 'hist' in port_data:
+                    hist = port_data['hist']
+                    max_delays.append(hist.get('max_usec', 0))
+                    avg_delays.append(hist.get('s_avg', 0))
+            if max_delays and avg_delays:
+                metrics.update({
+                    "netstorm_latency_max_ms": max(max_delays) / 1000.0,
+                    "netstorm_latency_avg_ms": (sum(avg_delays) / len(avg_delays)) / 1000.0
+                })
+
+        # 4. Malware / IPS (Поиск в Traffic Groups) 
+        client_traffic = stats.get('traffic', {}).get('client', {})
+        tg_names = client_traffic.get('tg_names', {})
+        malware = tg_names.get('malware', {})
+        
+        if malware:
+            mc = malware.get('client', {})
+            ms = malware.get('server', {})
+            
+            # 1. Отправлено малвари (TCP attempts + UDP sent packets)
+            m_tx_tcp = mc.get('tcps_connattempt', 0)
+            m_tx_udp = mc.get('udps_sndpkt', 0)
+            malware_sent = m_tx_tcp + m_tx_udp
+            
+            # 2. Заблокировано TCP (drops + testdrops)
+            m_drops_tcp = mc.get('tcps_drops', 0) + mc.get('tcps_testdrops', 0)
+            
+            # 3. Заблокировано UDP (Двусторонняя проверка потери пакетов)
+            m_udp_c2s_drops = max(0, m_tx_udp - ms.get('udps_rcvpkt', 0))
+            m_udp_s2c_drops = max(0, ms.get('udps_sndpkt', 0) - mc.get('udps_rcvpkt', 0))
+            
+            ips_blocks = m_drops_tcp + m_udp_c2s_drops + m_udp_s2c_drops
+            
+            metrics.update({
+                "netstorm_ips_sent": malware_sent,
+                "netstorm_ips_blocked": ips_blocks
+            })
+            
+        # 5. TCP Health (Ретрансмиты - индикатор переполнения буферов SUT)
+        metrics.update({
+            "netstorm_tcp_rexmit_pkts": client.get('tcps_sndrexmitpack', 0),
+            "netstorm_tcp_rexmit_bytes": client.get('tcps_sndrexmitbyte', 0)
+        })
+
+        # Безопасный парсинг значений
+        for k, v in metrics.items():
+            if v is not None:
+                try:
+                    val = max(0.0, float(v))
+                    lines.append(f'{k}{{{lbl}}} {val} {timestamp}')
+                except (ValueError, TypeError):
+                    pass
+
         self._send(lines)
 
     def _send(self, lines):
-        """Неблокирующая отправка в очередь"""
         if lines and self.push_url:
-            try:
-                self.queue.put_nowait(lines)
-            except queue.Full:
-                pass # БД легла или сеть тормозит - просто дропаем метрики, но спасаем тест
+            try: self.queue.put_nowait(lines)
+            except queue.Full: pass
 
     def stop(self):
-        """Аккуратное завершение потока при остановке теста"""
         if self.push_url:
             try: self.queue.put_nowait(None)
             except: pass
@@ -444,14 +534,33 @@ class TRexDriver:
             last_tcp_attempt = 0 
             last_udp_flows = 0
             session_peak_bps = 0.0
+            
+            # 🟢 ПЕРЕМЕННАЯ ДЛЯ ХРАНЕНИЯ ЧИСТОГО СНИМКА МЕТРИК
+            clean_stats = None
 
             while c.is_traffic_active() and not stop_event.is_set():
                 time.sleep(1)
                 now = time.time()
                 elapsed = int(now - start_ts)
+                time_left = self.duration - elapsed
 
                 try:
                     stats = c.get_stats()
+                    
+                    # 🟢 МАГИЯ: Делаем слепок за 3 секунды до конца (до того, как TRex порубит TCP)
+                    if time_left <= 3 and clean_stats is None:
+                        clean_stats = copy.deepcopy(stats)
+                        # Обогащаем слепок тегами TG Stats прямо здесь, пока профиль жив
+                        try:
+                            if hasattr(c, 'get_tg_names'):
+                                tg_names = c.get_tg_names()
+                                if tg_names:
+                                    tg_stats = c.get_traffic_tg_stats(tg_names)
+                                    if 'traffic' in clean_stats and 'client' in clean_stats['traffic']:
+                                        clean_stats['traffic']['client']['tg_names'] = tg_stats
+                        except Exception as e:
+                            Log.error(f"⚠️ [Driver] Failed to fetch ASTF TG stats for snapshot: {e}")
+                        Log.info("📸 Сделан чистый снимок метрик до начала Teardown-хвоста (Игнорируем RST-дропы)")
                     
                     if hasattr(self, 'telemetry') and self.telemetry.push_url:
                         if getattr(self.telemetry, 'worker', None) and self.telemetry.worker.is_alive():
@@ -467,6 +576,7 @@ class TRexDriver:
                         
                         if tx_bps == 0: tx_bps = client.get('m_tx_bps', 0)
                         if rx_bps == 0: rx_bps = client.get('m_rx_bps', 0)
+                        
                         # 🟢 ОБНОВЛЯЕМ ПИК
                         if tx_bps > session_peak_bps:
                             session_peak_bps = tx_bps
@@ -526,25 +636,23 @@ class TRexDriver:
             if c.is_connected():
                 c.stop()
                 try: 
-                    final_stats = c.get_stats()
+                    # 🟢 ИСПОЛЬЗУЕМ СНИМОК ЕСЛИ ЕСТЬ, ИНАЧЕ БЕРЕМ ГРЯЗНЫЕ ДАННЫЕ
+                    final_stats = clean_stats if clean_stats else c.get_stats()
                     
                     # =========================================================
-                    # 🟢 DATA-DRIVEN: ЭКСТРАКЦИЯ ТЕГОВ (TRex API Patch)
+                    # 🟢 DATA-DRIVEN: ЭКСТРАКЦИЯ ТЕГОВ (Если снимок не сработал)
                     # =========================================================
-                    try:
-                        # Запрашиваем список активных групп (тегов) у ядра
-                        if hasattr(c, 'get_tg_names'):
-                            tg_names = c.get_tg_names()
-                            if tg_names:
-                                # Делаем тяжелый RPC-запрос только если группы реально есть
-                                tg_stats = c.get_traffic_tg_stats(tg_names)
-                                
-                                # Вшиваем полученную статистику в структуру основного JSON
-                                if 'traffic' in final_stats and 'client' in final_stats['traffic']:
-                                    final_stats['traffic']['client']['tg_names'] = tg_stats
-                                    Log.success("🎯 ASTF TG Stats successfully injected into telemetry payload.")
-                    except Exception as e:
-                        Log.error(f"⚠️ [Driver] Failed to fetch ASTF TG stats via RPC: {e}")
+                    if not clean_stats:
+                        try:
+                            if hasattr(c, 'get_tg_names'):
+                                tg_names = c.get_tg_names()
+                                if tg_names:
+                                    tg_stats = c.get_traffic_tg_stats(tg_names)
+                                    if 'traffic' in final_stats and 'client' in final_stats['traffic']:
+                                        final_stats['traffic']['client']['tg_names'] = tg_stats
+                                        Log.success("🎯 ASTF TG Stats successfully injected into telemetry payload.")
+                        except Exception as e:
+                            Log.error(f"⚠️ [Driver] Failed to fetch ASTF TG stats via RPC: {e}")
                     # =========================================================
 
                     # Телеметрию пушим уже после обогащения объекта (хорошая практика SSoT)
@@ -554,7 +662,6 @@ class TRexDriver:
                     final_stats['custom_peak_bps'] = session_peak_bps
 
                     # 🟢 СБРОС ФИНАЛЬНОЙ ТЕЛЕМЕТРИИ В JSON
-                    # Используем точное имя, переданное оркестратором (уже лежит в self.telemetry.run_id)
                     log_name_base = getattr(self.telemetry, 'run_id', 'unknown_run')
                     
                     session_id = os.environ.get("PMI_RUN_ID", "unknown_session")

@@ -140,7 +140,7 @@ def execute_scenario_logic(runner_instance, scenario_id: str, conf: dict, label:
                         return False
                         
                     if user_opts.get('inject_ips'):
-                        Log.info(f"💉 Активирован Malware Overlay (IPS) для старта {scenario_id}!")
+                        Log.info(f"💉 Активирован Malware Overlay (IPS) для теста {scenario_id}!")
                         conf['_runtime_inject_ips'] = True 
                         sc_utils.apply_malware_overlay(conf)
                 else:
@@ -157,7 +157,7 @@ def execute_scenario_logic(runner_instance, scenario_id: str, conf: dict, label:
                 if can_inject_ips:
                     ans = input(f"🔥 Включить инъекцию малвари (IPS Overlay)? [y/N]: ").strip().lower()
                     if ans == 'y':
-                        Log.info(f"💉 Активирован Malware Overlay (IPS) для старта {scenario_id}!")
+                        Log.info(f"💉 Активирован Malware Overlay (IPS) для теста {scenario_id}!")
                         conf['_runtime_inject_ips'] = True 
                         sc_utils.apply_malware_overlay(conf)
 
@@ -294,16 +294,23 @@ def _run_legacy_repeats(runner, scenario_id, conf, repeats):
         should_check_health = conf.get('health_check', True)
         if should_check_health:
             try:
-                # Читаем кортеж, который теперь возвращает утилита
-                status, drops_count, is_ping_ok = sc_utils._evaluate_health(runner, current_conf, run_index=i)
+                # Читаем кортеж, который теперь возвращает утилита (status, drop_pct, ping)
+                status, drop_pct, is_ping_ok = sc_utils._evaluate_health(runner, current_conf, run_index=i)
                 
-                if status == "FATAL":
-                    Log.error(f"\n🚨 DUT IS UNRESPONSIVE OR DROPPING TRAFFIC (Drops: {drops_count})! 🚨")
+                if status == "CRITICAL":
+                    # 🚨 FAIL-FAST: Инфраструктура лежит, нет смысла продолжать
+                    Log.error(f"☢️ [FAIL-FAST] INFRASTRUCTURE BLACKOUT DETECTED ({drop_pct:.2f}% L2 Drops)! ☢️")
+                    Log.error("Aborting the entire test series. Please check your physical routes, VRFs, and cables.")
+                    break # Экстренно прерываем цикл!
+                    
+                elif status == "FATAL":
+                    # Классический предел емкости фаервола (L7 или умеренные L2 потери)
+                    Log.error(f"🚨 DUT IS UNRESPONSIVE OR DROPPING TRAFFIC (Drops: {drop_pct:.4f}%)! 🚨")
                     Log.warning(f"Stopping series early at iteration {i}. Maximum capacity reached.")
-                    break # Прерываем цикл! Дальше не идем!
+                    break # Прерываем цикл (предел найден)
                     
                 elif status == "WARN":
-                    prompt_text = f"🔥 DUT теряет пакеты (Drops: {drops_count}). Control Plane: {'Мертв' if not is_ping_ok else 'Жив'}. Плавим железку дальше?"
+                    prompt_text = f"🔥 DUT теряет пакеты (Drops: {drop_pct:.4f}%). Control Plane: {'Мертв' if not is_ping_ok else 'Жив'}. Плавим железку дальше?"
                     # Здесь флаг allow_ips_toggle не передаем (по умолчанию False), чекбокс при варнинге не нужен
                     wait_for_user_signal(prompt_text)
                     Log.warning("User elected to continue. Initiating next wave...")
@@ -400,15 +407,24 @@ def _run_binary_search(runner, scenario_id, conf, data):
                     
             runner._execute_iteration(target_scenario, step_conf, run_index=mid_val)
             
-            status, drops_count, is_ping_ok = sc_utils._evaluate_health(runner, step_conf, run_index=mid_val)
+            # 🟢 Читаем обновленный кортеж
+            status, drop_pct, is_ping_ok = sc_utils._evaluate_health(runner, step_conf, run_index=mid_val)
             
+            # 🚨 НОВАЯ ЛОГИКА: Экстренная остановка (Fail-Fast)
+            if status == "CRITICAL":
+                Log.error(f"\n☢️ [FAIL-FAST] ИНФРАСТРУКТУРА ЛЕЖИТ (Потери: {drop_pct:.2f}%).")
+                Log.error("Бинарный поиск прерван. Дальнейший тест не имеет смысла. Проверьте маршруты и VRF.")
+                break  # Выбиваем пробки, полностью прерываем цикл while!
+            
+            # Стандартная логика бинарного поиска
             if status == "OK":
-                Log.success(f"✅ Нагрузка {mid_val} ВЫДЕРЖАНА (Drops: {drops_count}). Поднимаем нижнюю планку.")
+                Log.success(f"✅ Нагрузка {mid_val} ВЫДЕРЖАНА (Drops: {drop_pct:.4f}%). Поднимаем нижнюю планку.")
                 best_pass = mid_val
                 min_val = mid_val 
             else:
-                Log.warning(f"❌ Нагрузка {mid_val} ПРОВАЛЕНА (Drops: {drops_count}). Опускаем верхнюю планку.")
-                max_val = mid_val 
+                # Сюда попадут статусы WARN и FATAL (фаервол жив, но захлебывается)
+                Log.warning(f"❌ Нагрузка {mid_val} ПРОВАЛЕНА (Drops: {drop_pct:.4f}%). Опускаем верхнюю планку.")
+                max_val = mid_val
                 
         except Exception as e:
             import traceback
@@ -420,7 +436,7 @@ def _run_binary_search(runner, scenario_id, conf, data):
         if (max_val - min_val) > precision:
             _cooldown(runner, conf)
         
-    Log.success(f"\n{Colors.GREEN}=================================================={Colors.ENDC}")
+    Log.success(f"{Colors.GREEN}=================================================={Colors.ENDC}")
     Log.success(f"🏁 БИНАРНЫЙ ПОИСК ЗАВЕРШЕН ЗА {iteration-1} ИТЕРАЦИЙ")
     Log.success(f"🏆 МАКСИМАЛЬНАЯ СТАБИЛЬНАЯ ПРОИЗВОДИТЕЛЬНОСТЬ: {best_pass}")
     Log.success(f"{Colors.GREEN}=================================================={Colors.ENDC}")

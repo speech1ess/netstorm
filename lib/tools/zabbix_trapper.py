@@ -7,7 +7,7 @@ from threading import Thread
 class ZabbixTrapper:
     """Чистый Python-клиент для Zabbix Trapper (без внешних зависимостей)"""
     
-    def __init__(self, zabbix_ip="10.207.87.13", zabbix_port=10051, target_host="IEP-Stand-FW-01"):
+    def __init__(self, zabbix_ip="10.207.87.13", zabbix_port=10051, target_host="trex-1"):
         self.zabbix_ip = zabbix_ip
         self.zabbix_port = zabbix_port
         self.target_host = target_host

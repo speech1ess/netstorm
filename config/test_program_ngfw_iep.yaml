@@ -7,7 +7,7 @@
 program:
   description: "NGFW: Матрица деградации, емкость, инфраструктурная устойчивость"
   dut:
-    label: "Континент 4 (v.4.2.1.-758) [L3 Inline Mode]"
+    label: "Континент 4 (v.4.2.1.-758)" # "UserGate DCFW E1010 [L3 Inline Mode]" # "--=Calibration run=--"
     type: "NGFW"
     mgmt_ip: "10.0.40.5"  # healthcheck
     datapath:
@@ -312,7 +312,7 @@ scenarios:
       label: "North-South NDR Binary Search [CAP1_NDR_NS] (Perimeter Mix)"
       prompt: "[INFO]: Поиск предела non-drop-rate на L7-миксе (Север-Юг)."
       health_check: true
-      duration: 180       
+      duration: 240       
       interval: 30        
       series:
         type: "binary_search"
@@ -325,19 +325,19 @@ scenarios:
       presets:
         limit_10g:
           label: "🥉 Entry (Up to 10 Gbps, precision: 1)"
-          overrides: { series: { type: "binary_search", min: 1, max: 12, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 1, max: 10, precision: 1 } }
         limit_30g:
           label: "🥈 Mid-Range (Up to 30 Gbps, precision: 1)"
-          overrides: { series: { type: "binary_search", min: 5, max: 35, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 5, max: 30, precision: 1 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps, precision: 2)"
-          overrides: { series: { type: "binary_search", min: 20, max: 60, precision: 2 } }
+          overrides: { series: { type: "binary_search", min: 20, max: 50, precision: 2 } }
     CAP2_NDR_WE:
       type: "series"
       label: "West-East NDR Binary Search [CAP2_NDR_WE] (DataCenter Mix)"
       prompt: "[INFO]: Поиск предела non-drop-rate на TCP-потоках (Запад-Восток)."
       health_check: true
-      duration: 180       
+      duration: 240       
       interval: 30        
       series:
         type: "binary_search"
@@ -350,13 +350,13 @@ scenarios:
       presets:
         limit_10g:
           label: "🥉 Entry (Up to 10 Gbps), precision: 1"
-          overrides: { series: { type: "binary_search", min: 1, max: 12, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 1, max: 10, precision: 1 } }
         limit_30g:
           label: "🥈 Mid-Range (Up to 30 Gbps), precision: 1"
-          overrides: { series: { type: "binary_search", min: 5, max: 35, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 5, max: 30, precision: 1 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps), precision: 2"
-          overrides: { series: { type: "binary_search", min: 20, max: 60, precision: 2 } }
+          overrides: { series: { type: "binary_search", min: 20, max: 50, precision: 2 } }
     # --- ШАГ 2.2: ИНТЕРАКТИВНАЯ МАТРИЦА ---
     CAP3_PD_NS:
       type: "series"

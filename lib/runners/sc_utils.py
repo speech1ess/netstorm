@@ -160,7 +160,7 @@ def build_cmd(tool, profile, duration, mult, tput, threads, log_name_base, actor
 def _evaluate_health(runner, step_conf, run_index):
     """
     Гибридный Health-Check (Ping + TRex JSON Telemetry).
-    Возвращает КОРТЕЖ: (status_string, drop_pct, ping_ok_boolean)
+    Возвращает КОРТЕЖ: (status_string, deciding_drop_pct, ping_ok_boolean)
     """
     Log.info("\n🏥 --- Running Hybrid Health Check ---")
     dut_conf = runner.conf.get('program', {}).get('dut', {})
@@ -182,7 +182,6 @@ def _evaluate_health(runner, step_conf, run_index):
             else:
                 cmd = ['ip', 'netns', 'exec', ns, 'ping', '-c', '1', '-W', '1', ip]
             try:
-                # Жесткий таймаут для защиты оркестратора от зависания процесса
                 res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
                 return res.returncode == 0
             except subprocess.TimeoutExpired:
@@ -208,11 +207,12 @@ def _evaluate_health(runner, step_conf, run_index):
     # =========================================================================
     # 2. ПРОВЕРКА DATA PLANE (TRex JSON Stats via Unified Analyzer)
     # =========================================================================
-    tx_pkts = 0
-    rx_pkts = 0
-    absolute_drops = 0
-    drop_pct = 0.0
     stats_found = False
+    is_astf = False
+    
+    # Инициализируем переменные нулями для страховки
+    l2_tx, l2_rx, l2_drops, l2_drop_pct = 0, 0, 0, 0.0
+    l7_tx, l7_rx, l7_drops, l7_drop_pct = 0, 0, 0, 0.0
     
     log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), runner.session_id)
     
@@ -232,31 +232,25 @@ def _evaluate_health(runner, step_conf, run_index):
         if os.path.exists(stats_path):
             stats_found = True
             try:
-                # 🟢 ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ: Используем тот же Анализатор, что и Репортер
+                # 🟢 ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ (Обновленный Анализатор)
                 from reporting.analyzers.trex_analyzer import TRexRunAnalyzer
                 analyzer = TRexRunAnalyzer(stats_path)
                 
                 if analyzer.is_valid:
                     kpi = analyzer.get_kpi_summary()
-                    absolute_drops = kpi.get('drops_total', 0)
-                    drop_pct = kpi.get('drop_pct', 0.0) # Честный процент (например, 0.0061)
+                    is_astf = getattr(analyzer, 'is_astf', False)
                     
-                    # Читаем TX/RX для вывода в лог
-                    with open(stats_path, 'r', encoding='utf-8') as f:
-                        stats_data = json.load(f)
-                        if 'traffic' in stats_data and 'client' in stats_data['traffic']:
-                            client = stats_data['traffic']['client']
-                            tcp_attempt = client.get('tcps_connattempt', 0)
-                            udp_flows = client.get('udps_accepts', client.get('udps_sndpkt', 0))
-                            tx_pkts = tcp_attempt + udp_flows
-                            rx_pkts = max(0, tx_pkts - absolute_drops)
-                        else:
-                            tx_pkts = stats_data.get('tx_pkts', 0)
-                            rx_pkts = stats_data.get('rx_pkts', 0)
-                            if tx_pkts == 0 and rx_pkts == 0:
-                                total = stats_data.get('total', {})
-                                tx_pkts = total.get('opackets', total.get('tx_pkts', 0))
-                                rx_pkts = total.get('ipackets', total.get('rx_pkts', 0))
+                    # Забираем физику
+                    l2_tx = kpi.get('l2_tx_frames', 0)
+                    l2_rx = kpi.get('l2_rx_frames', 0)
+                    l2_drops = kpi.get('l2_drops', 0)
+                    l2_drop_pct = kpi.get('l2_drop_pct', 0.0)
+                    
+                    # Забираем логику сессий
+                    l7_tx = kpi.get('l7_tx_flows', 0)
+                    l7_rx = kpi.get('l7_rx_flows', 0)
+                    l7_drops = kpi.get('l7_drops', 0)
+                    l7_drop_pct = kpi.get('l7_drop_pct', 0.0)
 
             except Exception as e:
                 Log.error(f"❌ [Data Plane] Failed to parse TRex telemetry via Analyzer: {e}")
@@ -269,11 +263,14 @@ def _evaluate_health(runner, step_conf, run_index):
         Log.error("💀 FATAL: Could not find TRex JSON telemetry. Proceeding BLOCKED. Generator failed?")
         return "FATAL", 0.0, ping_ok 
 
-    if tx_pkts == 0:
+    if l2_tx == 0 and l7_tx == 0:
         Log.error("💀 FATAL: TRex reported 0 TX packets/flows. No traffic was generated.")
         return "FATAL", 0.0, ping_ok
 
-    Log.info(f"📊 [Data Plane] Total TX (Pkts/Flows): {tx_pkts} | RX: {rx_pkts} | Legit Drops: {absolute_drops} ({drop_pct}%)")
+    # Выводим кристально чистые логи
+    Log.info(f"📊 [Data Plane - L2] Frames TX: {l2_tx} | RX: {l2_rx} | Drops: {l2_drops} ({l2_drop_pct:.4f}%)")
+    if is_astf:
+        Log.info(f"📊 [Data Plane - L7] Sessions TX: {l7_tx} | RX: {l7_rx} | Drops: {l7_drops} ({l7_drop_pct:.4f}%)")
         
     thresholds = dut_conf.get('thresholds') or dut_conf.get('tresholds') or {}
     WARN_LIMIT = float(thresholds.get('warn', 0.05))
@@ -281,19 +278,52 @@ def _evaluate_health(runner, step_conf, run_index):
     
     Log.info(f"⚙️ Limits applied -> WARN: {WARN_LIMIT}%, FATAL: {FATAL_LIMIT}%")
 
-    if drop_pct < WARN_LIMIT:
+    # =========================================================================
+    # 🟢 4. ЛОГИКА СУДЕЙСТВА: Умный алгоритм (NetSecOPEN / RFC 9411 Style)
+    # =========================================================================
+    PANIC_THRESHOLD = 98.0  # Черная дыра (инфраструктура лежит)
+    L2_TOLERANCE = 1.0      # Допустимый фон микродропов (TCP Retransmits). Обычно 1%.
+
+    if is_astf:
+        if l2_drop_pct >= PANIC_THRESHOLD:
+            Log.error(f"☢️ PANIC: Catastrophic L2 loss detected ({l2_drop_pct:.2f}%). Network is blackholing traffic!")
+            return "CRITICAL", l2_drop_pct, ping_ok
+
+        # Если L2 потери превышают допустимый фоновый шум — это железная деградация сети
+        if l2_drop_pct >= L2_TOLERANCE:
+            deciding_drop_pct = l2_drop_pct
+            fail_reason = "L2 Frames (Exceeded L2 Tolerance)"
+        else:
+            # L2 потери в рамках нормы (справляется TCP). Судим СТРОГО по L7!
+            deciding_drop_pct = l7_drop_pct
+            fail_reason = "L7 Sessions"
+            if l2_drop_pct > 0 and l7_drop_pct < FATAL_LIMIT:
+                Log.info(f"💡 NetSecOPEN: TCP Stack handled {l2_drop_pct:.4f}% L2 background drops. Judging strictly by L7 Transaction Success Rate.")
+    else:
+        # Для Stateless (STL) тестов (чистый UDP флуд) судим только по физике
+        if l2_drop_pct >= PANIC_THRESHOLD:
+            Log.error(f"☢️ PANIC: Catastrophic L2 loss detected ({l2_drop_pct:.2f}%).")
+            return "CRITICAL", l2_drop_pct, ping_ok
+            
+        deciding_drop_pct = l2_drop_pct
+        fail_reason = "L2 Frames"
+
+    # =========================================================================
+    # 5. ПРИНЯТИЕ ФИНАЛЬНОГО РЕШЕНИЯ
+    # =========================================================================
+    if deciding_drop_pct < WARN_LIMIT:
         if not ping_ok:
             Log.info("Data Plane is clean! Ignoring Control Plane failure.")
-        Log.success("🏥 Health Check Passed. Ready for next step.")
-        return "OK", drop_pct, ping_ok
+        Log.success(f"🏥 Health Check Passed (Max drops: {deciding_drop_pct:.4f}%). Ready for next step.")
+        return "OK", deciding_drop_pct, ping_ok
         
-    elif WARN_LIMIT <= drop_pct < FATAL_LIMIT:
-        Log.warning(f"🔥 ВНИМАНИЕ! Обнаружено {drop_pct}% потерь. Превышен WARN_LIMIT ({WARN_LIMIT}%).")
-        return "WARN", drop_pct, ping_ok
+    elif WARN_LIMIT <= deciding_drop_pct < FATAL_LIMIT:
+        Log.warning(f"🔥 ВНИМАНИЕ! Обнаружено {deciding_drop_pct:.4f}% потерь ({fail_reason}). Превышен WARN_LIMIT ({WARN_LIMIT}%).")
+        return "WARN", deciding_drop_pct, ping_ok
         
     else:
-        Log.error(f"💀 FATAL: {drop_pct}% drops exceed FATAL_LIMIT ({FATAL_LIMIT}%). DUT is overwhelmed.")
-        return "FATAL", drop_pct, ping_ok
+        Log.error(f"💀 FATAL: {deciding_drop_pct:.4f}% drops ({fail_reason}) exceed FATAL_LIMIT ({FATAL_LIMIT}%). DUT is overwhelmed.")
+        return "FATAL", deciding_drop_pct, ping_ok
 
 def has_malware_capability(conf: dict) -> bool:
     """Проверяет наличие L7 ASTF EMIX профилей в конфиге."""

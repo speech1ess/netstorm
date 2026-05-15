@@ -11,7 +11,7 @@ networks:
     vlan: 500
     subnets:
       cidr: "10.0.50.0/29"
-      trex_clients: "15.0.0.0/16"                      # TRex Port 0 эмулирует этот пул
+      trex_clients: "15.0.0.0/15"                      # TRex Port 0 эмулирует этот пул
       jmeter_base: "172.17.0.0/16"                     # /opt/pmi/profiles/jmeter/source_ips.csv
       jmeter_attack: "10.17.0.0/16"                    # /opt/pmi/profiles/jmeter/attack_ips.csv
     gateway: 

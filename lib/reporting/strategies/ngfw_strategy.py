@@ -155,86 +155,46 @@ class NGFWReportStrategy(BaseReportStrategy):
                 except Exception as e:
                     Log.warning(f"[{self.__class__.__name__}] Failed to copy JSON: {e}")
 
-                # 🟢 DATA-DRIVEN ФИКС: Читаем и легитимный, и вредоносный трафик раздельно
-                try:
-                    with open(target_json, 'r', encoding='utf-8') as f:
-                        jdata = json.load(f)
-                        tx_pkts_global = jdata.get('global', {}).get('tx_pkts', 0)
-                        
-                        if tx_pkts_global == 0 and 'traffic' in jdata:
-                            client = jdata.get('traffic', {}).get('client', {})
-                            tg_names = client.get('tg_names', {})
-                            
-                            # 1. Парсим легитимный трафик (для оценки стабильности DUT)
-                            if 'legit' in tg_names:
-                                lc = tg_names['legit'].get('client', {})
-                                tx_pkts = lc.get('tcps_connattempt', 0) + lc.get('udps_accepts', lc.get('udps_sndpkt', 0))
-                                astf_drops = (lc.get('tcps_drops', 0) + lc.get('tcps_conndrops', 0) + 
-                                              lc.get('tcps_timeoutdrop', 0) + lc.get('udps_keepdrops', 0))
-                            else:
-                                tx_pkts = client.get('tcps_connattempt', 0) + client.get('udps_accepts', client.get('udps_sndpkt', 0))
-                                astf_drops = client.get('tcps_drops', 0) + client.get('tcps_conndrops', 0) + client.get('udps_noportbcast', 0)
-
-                            stats['astf_drops'] = astf_drops
-                            stats['tx_pkts'] = tx_pkts
-                            if tx_pkts > 0:
-                                stats['drop_pct'] = (astf_drops / tx_pkts) * 100.0
-
-                            # 2. Парсим малварь (для оценки безопасности)
-                            if 'malware' in tg_names:
-                                mc = tg_names['malware'].get('client', {})
-                                ms = tg_names['malware'].get('server', {}) # 🟢 Читаем и сервер тоже!
-                                
-                                malware_tx_tcp = mc.get('tcps_connattempt', 0)
-                                malware_tx_udp = mc.get('udps_sndpkt', 0)
-                                stats['malware_tx'] = malware_tx_tcp + malware_tx_udp
-                                
-                                # 🟢 ИСТИННЫЙ ПОДСЧЕТ TCP DROPS
-                                # tcps_drops (сброс по таймауту) + tcps_testdrops (сброс по RST от фаервола)
-                                # tcps_timeoutdrop не берем, чтобы избежать двойного подсчета
-                                malware_drops_tcp = mc.get('tcps_drops', 0) + mc.get('tcps_testdrops', 0)
-                                
-                                # 🟢 ИСТИННЫЙ ПОДСЧЕТ UDP DROPS
-                                # То, что отправил клиент, минус то, что реально долетело до сервера
-                                malware_drops_udp = malware_tx_udp - ms.get('udps_rcvpkt', 0)
-                                
-                                stats['malware_drops'] = malware_drops_tcp + malware_drops_udp
-                            
-                            # 🟢 Извлекаем аппаратную задержку (Latency)
-                            lat_ms = 0.0
-                            if 'latency' in jdata:
-                                lat_sum = 0
-                                ports = 0
-                                for port_k, port_v in jdata['latency'].items():
-                                    if isinstance(port_v, dict) and 'hist' in port_v:
-                                        lat_sum += port_v['hist'].get('s_avg', 0)
-                                        ports += 1
-                                if ports > 0:
-                                    lat_ms = (lat_sum / ports) / 1000.0  # Конвертируем usec в ms
-                            stats['latency_ms'] = lat_ms
-                        else:
-                            # 🟢 ВОТ ОНО! ОТДАЕМ ПАКЕТЫ ДЛЯ STL-ТЕСТОВ!
-                            total = jdata.get('total', {})
-                            stats['tx_pkts'] = jdata.get('tx_pkts') or total.get('opackets', 0)
-
-                except Exception as e:
-                    Log.error(f"[{self.__class__.__name__}] Failed to parse exact TG drops from JSON: {e}")
-
+                # 🟢 ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ (Берем данные из нового Анализатора)
                 kpi = analyzer.get_kpi_summary()
                 
                 raw_bps = kpi.get('max_tx_bps', 0)
                 stats['max_tx_bps_raw'] = raw_bps 
                 stats['max_tx_bw'] = f"{raw_bps / 1e9:.2f} Gbps" if raw_bps >= 1e9 else f"{raw_bps / 1e6:.2f} Mbps"
-                # 🟢 ЗАБИРАЕМ ДРОПЫ ИЗ АНАЛИЗАТОРА
-                stats['astf_drops'] = kpi.get('drops_total', 0)
-                stats['drop_pct'] = kpi.get('drop_pct', 0.0)
-                
-                # 🟢 Забираем метрику пакетов
                 stats['pps'] = kpi.get('max_tx_pps', 0)
+                
+                # 🟢 УМНЫЙ ВЫБОР ДРОПОВ (Синхронизировано с NetSecOPEN логикой Оркестратора)
+                if getattr(analyzer, 'is_astf', False):
+                    l2_drop_pct = kpi.get('l2_drop_pct', 0.0)
+                    l7_drop_pct = kpi.get('l7_drop_pct', 0.0)
+                    L2_TOLERANCE = 1.0
+                    
+                    if l2_drop_pct >= L2_TOLERANCE:
+                        # Если физика сыпется жестко (>1%), показываем в отчете L2
+                        stats['tx_pkts'] = kpi.get('l2_tx_frames', 0)
+                        stats['astf_drops'] = kpi.get('l2_drops', 0)
+                        stats['drop_pct'] = l2_drop_pct
+                    else:
+                        # Если L2 в пределах нормы, показываем в отчете чистые сессии L7
+                        stats['tx_pkts'] = kpi.get('l7_tx_flows', 0)
+                        stats['astf_drops'] = kpi.get('l7_drops', 0)
+                        stats['drop_pct'] = l7_drop_pct
+                else:
+                    # Для Stateless всегда показываем физику
+                    stats['tx_pkts'] = kpi.get('l2_tx_frames', 0)
+                    stats['astf_drops'] = kpi.get('l2_drops', 0)
+                    stats['drop_pct'] = kpi.get('l2_drop_pct', 0.0)
 
+                # Malware статистика (если была)
+                stats['malware_tx'] = kpi.get('malware_sent', 0)
+                stats['malware_drops'] = kpi.get('ips_blocks', 0)
+
+                # Задержки (Latency)
                 stats['chart_data'] = analyzer.get_latency_series()
                 stats['latency_avg'] = kpi.get('avg_latency_ms', 0)
+                stats['latency_ms'] = kpi.get('avg_latency_ms', 0) # Дубликат для совместимости
                 stats['jitter'] = kpi.get('jitter_usec', 0)
+                
                 # 🟢 DATA-DRIVEN: Парсим Time-Series для долгих тестов на емкость (MAX_CC)
                 time_series = {'time_s': [], 'active_flows': [], 'drops': []}
                 if 'max_cc' in str(log_path).lower():
@@ -242,7 +202,6 @@ class NGFWReportStrategy(BaseReportStrategy):
                         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                             for line in f:
                                 if 'Active Flows:' in line:
-                                    # Ищем паттерн: [ 124s] ASTF TCP | Active Flows: 1258674 | ... Total Drops: 0
                                     m = re.search(r'\[\s*(\d+)s\].*?Active Flows:\s*(\d+).*?Total Drops:\s*(\d+)', line)
                                     if m:
                                         time_series['time_s'].append(int(m.group(1)))
@@ -252,7 +211,7 @@ class NGFWReportStrategy(BaseReportStrategy):
                         Log.warning(f"Failed to parse time-series from {log_path}: {e}")
                 stats['time_series'] = time_series
             else:
-                Log.warning(f"[{self.__class__.__name__}] JSON artifact not found: {source_json}")
+                Log.warning(f"[{self.__class__.__name__}] JSON artifact not found or invalid: {source_json}")
                 stats.update({'astf_drops': 0, 'drop_pct': 0.0, 'max_tx_bps_raw': 0, 'max_tx_bw': "0 bps", 'chart_data': {"x_usec": [], "y_count": []}})
                 
         elif tool == 'JMETER':
@@ -276,19 +235,19 @@ class NGFWReportStrategy(BaseReportStrategy):
 
     def _calculate_status(self, actor, stats, actual_rps, errors, total):
         ev = {'status_txt': 'UNKNOWN', 'status_cls': 'status-fail', 'err_style': 'color:#ccc;'}
-        p_name = actor.get('profile', 'unknown').upper()
+        p_name = actor.get('profile', 'unknown')
         
         is_baseline = 'BASELINE' in p_name
         is_ips = actor.get('is_ips', False)
 
         if is_ips:
-            ev['display_name'] = f"🛡️ <b>{p_name}</b>"
+            ev['display_name'] = f"{p_name}☣️"
             ev['row_style'] = 'style="background-color: #fcf3cf;"' 
         elif is_baseline:
-            ev['display_name'] = f"⭐ <b>{p_name}</b>"
+            ev['display_name'] = f"⭐ <b>{p_name.upper()}</b>"
             ev['row_style'] = 'style="border-bottom: 3px solid #7f8c8d; background-color: #f8f9fa;"'
         else:
-            ev['display_name'] = f"<b>{p_name}</b>"
+            ev['display_name'] = f"{p_name}"
             ev['row_style'] = ""
 
         # 🟢 DATA-DRIVEN: Читаем замороженные лимиты сессии
@@ -302,7 +261,7 @@ class NGFWReportStrategy(BaseReportStrategy):
         # 🟢 ФИКС: Динамическое форматирование сверхмалых процентов
         def format_pct(pct):
             if pct > 0 and pct < 0.01:
-                return f"{pct:.4f}"
+                return f"{pct:.5f}"
             return f"{pct:.2f}"
 
         if actor['tool'] == 'JMETER':
@@ -323,7 +282,7 @@ class NGFWReportStrategy(BaseReportStrategy):
             mult = actor.get('mult', '?')
             # 🟢 ФИКС: Умная подстановка pps/cps
             unit = "pps" if ('UDP_PPS' in p_name or 'STL' in p_name) else "cps"
-            ev['load_config'] = f"<b>TREX</b>: {mult}x 1000 {unit}"
+            ev['load_config'] = f"TREX: {mult}x1000 {unit}"
             
             tx_bw = stats.get('max_tx_bw', '0 bps')
             drops = stats.get('astf_drops', 0)
@@ -341,8 +300,8 @@ class NGFWReportStrategy(BaseReportStrategy):
                 malware_pct = (malware_drops / malware_tx * 100.0) if malware_tx > 0 else 0.0
                 
                 ev['err_display'] = (
-                    f"Legit Drops: <b>{drops}</b> ({format_pct(drop_pct)}%)<br><br>"
-                    f"<span style='color:#8e44ad; font-size:0.95em; font-weight:bold;'>"
+                    f"Legit Drops: {drops} ({format_pct(drop_pct)}%)<br>"
+                    f"<span style='color:#696969; font-size:0.8em; font-style:italic;'>"
                     f"Malware Blocked: {malware_drops} ({malware_pct:.1f}%)</span>"
                 )
 
@@ -741,20 +700,59 @@ class NGFWReportStrategy(BaseReportStrategy):
                     </div>
                 </div>
                 """ % { 'x_data': json.dumps(matrix_x_iters), 'y_bps': json.dumps(matrix_y_bps), 'y_drops': json.dumps(matrix_y_drops) }
+        # =========================================================
+        # 🟢 1. ПРЕДСКАНИРОВАНИЕ: Ищем Абсолютного Победителя (Max PASS)
+        # =========================================================
+        best_pass_idx = -1
+        best_pass_actor_idx = -1
+        max_load_found = -1
+
+        for i, it in enumerate(data.get('iterations', [])):
+            for j, a in enumerate(it.get('actors', [])):
+                ev = a.get('eval', {})
+                if ev.get('status_txt') in ['PASS', 'SECURED', 'LIMIT FOUND']:
+                    try:
+                        current_load = float(a.get('mult') or a.get('load') or 0)
+                    except (ValueError, TypeError):
+                        current_load = 0
+                        
+                    if current_load > max_load_found:
+                        max_load_found = current_load
+                        best_pass_idx = i
+                        best_pass_actor_idx = j
+
+        # =========================================================
+        # 🟢 2. ОСНОВНОЙ ЦИКЛ СБОРКИ HTML-ТАБЛИЦЫ И АРТЕФАКТОВ
+        # =========================================================
+        # (Обнуляем на всякий случай перед сборкой)
+        overview_rows = ""
+        artifacts_section_html = ""
 
         for idx, it in enumerate(data.get('iterations', [])):
             iter_artifacts_inner = ""
-            for a in it.get('actors', []):
+            for a_idx, a in enumerate(it.get('actors', [])):
                 ev = a.get('eval', {})
                 st = a.get('stats', {})
                 
-                rt_display = ev.get('response_time', '-')
+                # =========================================================
+                # 🟢 ВЫЧИСЛЯЕМ ФОН СТРОКИ НА ОСНОВЕ СТАТУСА ИТЕРАЦИИ
+                # =========================================================
+                status_txt = ev.get('status_txt', '').upper()
                 
+                if idx == best_pass_idx and a_idx == best_pass_actor_idx:
+                    row_class = 'class="row-pass"' # 🏆 ТОЛЬКО победитель!
+                elif status_txt in ['FAIL', 'DOS', 'DEGRADED', 'BYPASSED']:
+                    row_class = 'class="row-fail"' # 💀 Провалы
+                else:
+                    row_class = ev.get('row_style', '') # Фоллбэк
+                
+                rt_display = ev.get('response_time', '-')
                 if a['tool'] == 'JMETER' and st.get('avg_rt') != '-':
                     rt_display = f"{st['avg_rt']} ms<br><span style='font-size:0.85em; color:#888;'>(Max: {st['max_rt']})</span>"
 
+                # 🟢 Вставляем вычисленный row_class прямо в тег <tr>
                 overview_rows += f"""
-                <tr {ev.get('row_style', '')}>
+                <tr {row_class}>
                     <td>{ev.get('display_name', '')}</td>
                     <td>{a.get('start', it.get('start', ''))}</td>
                     <td>{it.get('duration', '?')}s</td>

@@ -15,7 +15,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helv
 .report-header {{ background: #2c3e50; color: white; padding: 30px 40px; }}
 .report-label {{ font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #bdc3c7; margin-bottom: 10px; }}
 .scenario-title {{ font-size: 28px; font-weight: 700; margin: 0; line-height: 1.2; }}
-.scenario-subtitle {{ font-size: 18px; color: #3498db; margin-top: 8px; font-weight: 500; }} /* <-- НОВЫЙ СТИЛЬ */
+.scenario-subtitle {{ font-size: 18px; color: #3498db; margin-top: 8px; font-weight: 500; }}
 .session-meta {{ margin-top: 15px; font-size: 14px; color: #ecf0f1; opacity: 0.8; font-family: monospace; }}
 
 /* CONTENT PADDING */
@@ -38,9 +38,12 @@ tr:hover td {{ background: #fdfdfd; }}
 /* STATUS BADGES */
 .status-pass {{ color: #27ae60; font-weight: bold; background: rgba(39, 174, 96, 0.1); padding: 4px 8px; border-radius: 4px; display: inline-block; }}
 .status-fail {{ color: #e74c3c; font-weight: bold; background: rgba(231, 76, 60, 0.1); padding: 4px 8px; border-radius: 4px; display: inline-block; }}
-/* НОВЫЕ КЛАССЫ: Желтый для частичного пробития и Синий для успешного блока */
 .status-warning {{ color: #f39c12; font-weight: bold; background: rgba(243, 156, 18, 0.1); padding: 4px 8px; border-radius: 4px; display: inline-block; }}
 .status-blocked {{ color: #2980b9; font-weight: bold; background: rgba(41, 128, 185, 0.1); padding: 4px 8px; border-radius: 4px; display: inline-block; }}
+
+/* НОВЫЕ КЛАССЫ ДЛЯ ПОДСВЕТКИ СТРОК (ROW BACKGROUNDS) */
+.row-pass td {{ background-color: rgba(46, 204, 113, 0.08) !important; }}
+.row-fail td {{ background-color: rgba(231, 76, 60, 0.03) !important; }}
 
 /* ITERATION CARDS */
 .iter-card {{ border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 30px; overflow: hidden; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }}
