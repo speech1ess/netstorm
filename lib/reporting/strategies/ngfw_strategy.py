@@ -320,7 +320,7 @@ class NGFWReportStrategy(BaseReportStrategy):
                         ev['status_txt'], ev['status_cls'] = "BYPASSED", "status-fail"
                         ev['err_style'] = "color:#e74c3c; font-weight:bold;"
             # 🟢 НОВАЯ ЛОГИКА: Интеллектуальный поиск точки излома емкости (MAX_CC)
-            elif 'MAX_CC' in p_name:
+            elif 'max_cc' in p_name.lower():
                 ts_flows = stats.get('time_series', {}).get('active_flows', [])
                 ts_drops = stats.get('time_series', {}).get('drops', [])
                 
@@ -357,16 +357,16 @@ class NGFWReportStrategy(BaseReportStrategy):
                 
                 if limit_hit or (real_max_cc == 0):
                     # Потолок достигнут и пробит
-                    ev['status_txt'], ev['status_cls'] = "LIMIT FOUND", "status-pass" 
+                    ev['status_txt'], ev['status_cls'] = "LIMIT FOUND", "status-warning" 
                     ev['err_style'] = "color:#8e44ad; font-weight:bold;" 
                     ev['err_display'] = f"Capped at ~{cc_formatted} CC<br><span style='font-size:0.8em; color:#e74c3c;'>Broke at {break_drops} drops</span>"
-                    ev['hc_icon'] = '<span title="State Table Exhausted (Target Reached)" style="color:#8e44ad; font-size:1.2em;">🚧</span>'
+                    ev['hc_icon'] = '<span title="State Table Exhausted" style="color:#8e44ad; font-weight:bold; font-size:1.1em;">🚧 Exhausted</span>'
                 else:
                     # Влили всё, фаервол не упал
-                    ev['status_txt'], ev['status_cls'] = "NOT REACHED", "status-warning" 
+                    ev['status_txt'], ev['status_cls'] = "NOT REACHED", "status-pass" 
                     ev['err_style'] = "color:#27ae60; font-weight:bold;"
                     ev['err_display'] = f"Peak: {cc_formatted} CC<br><span style='font-size:0.8em; color:#7f8c8d;'>Steady State: {break_drops} drops</span>"
-                    ev['hc_icon'] = '<span title="Capacity Not Reached" style="color:#27ae60; font-size:1.2em;">✅</span>'
+                    ev['hc_icon'] = '<span title="Capacity Not Reached" style="color:#27ae60; font-weight:bold; font-size:1.1em;">✅ Stable</span>'
             else:
                 ev['err_display'] = f"Drops: {drops} ({format_pct(drop_pct)}%)" 
                 
@@ -739,7 +739,9 @@ class NGFWReportStrategy(BaseReportStrategy):
                 # =========================================================
                 status_txt = ev.get('status_txt', '').upper()
                 
-                if idx == best_pass_idx and a_idx == best_pass_actor_idx:
+                if status_txt == 'LIMIT FOUND':
+                    row_class = 'style="background-color: rgba(142, 68, 173, 0.05);"' # Нежно-фиолетовый
+                elif idx == best_pass_idx and a_idx == best_pass_actor_idx:
                     row_class = 'class="row-pass"' # 🏆 ТОЛЬКО победитель!
                 elif status_txt in ['FAIL', 'DOS', 'DEGRADED', 'BYPASSED']:
                     row_class = 'class="row-fail"' # 💀 Провалы
@@ -845,22 +847,175 @@ class NGFWReportStrategy(BaseReportStrategy):
                 iter_artifacts_inner += "</div>"
             artifacts_section_html += f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Iteration #{it["id"]} Artifacts</span></div><div class="iter-body">{iter_artifacts_inner}</div></div>'
 
+        # =========================================================
+        # 🚀 ИНТЕРАКТИВНЫЕ ГРАФИКИ (VictoriaMetrics + Zabbix)
+        # =========================================================
         target_health_html = ""
-        src_csv = os.path.join(self.logs_root, self.session_id, "target_metrics.csv")
-        if os.path.exists(src_csv):
-            shutil.copy2(src_csv, os.path.join(self.out_dir, "target_metrics.csv"))
-            try:
-                from reporting.chart_builder import build_target_chart_html
-                target_health_html = build_target_chart_html(os.path.join(self.out_dir, "target_metrics.csv"))
-            except ImportError: pass
+        try:
+            from reporting.chart_builder import ChartDataBuilder
+            
+            # --- КОНФИГ VICTORIA METRICS ---
+            monitor_node = getattr(self, 'config', {}).get('nodes', {}).get('monitor', {})
+            vm_ip = monitor_node.get('net', {}).get('ip', '10.207.129.23') 
+            vm_port = monitor_node.get('services', {}).get('victoria_api', {}).get('port', 8428)
+            vm_url = f"http://{vm_ip}:{vm_port}"
+
+            # --- КОНФИГ ZABBIX (Пока хардкодим, потом вынесешь в YAML) ---
+            zb_url = "http://10.207.87.13/"
+            zb_token = "ba77f0cfabc7f48fc51d354dce3f763a281673a8293f57a9c39ab5a88bcc9c79"  # ВПИШИ СЮДА ТОКЕН!
+            zb_tag = "ActiveDUT"
+
+            # ИДЕАЛЬНОЕ вычисление таймфрейма
+            session_date = self.session_id.split('_')[0] 
+            start_ts = int(datetime.strptime(f"{session_date} {data['start']}", "%Y%m%d %H:%M:%S").timestamp())
+            end_ts = int(datetime.strptime(f"{session_date} {data['end']}", "%Y%m%d %H:%M:%S").timestamp())
+            start_ts -= 30
+            end_ts += 30
+
+            # Дергаем Билдер
+            builder = ChartDataBuilder(vm_url=vm_url, zabbix_url=zb_url, zabbix_token=zb_token)
+            tp_data = builder.build_throughput_chart(self.session_id, start_ts, end_ts)
+            fs_data = builder.build_flow_state_chart(self.session_id, start_ts, end_ts)
+            zb_data = builder.build_target_health_chart(zb_tag, "system.cpu.util", "system.ram.util", start_ts, end_ts)
+            
+            chart_html = []
+            
+            # 🟢 БЛОК 1: VICTORIA METRICS (Если есть данные)
+            if tp_data["time"] or fs_data["time"]:
+                chart_html.append("""
+                <div class="iter-card" style="border-top: 4px solid #2980b9;">
+                    <div class="iter-header" style="background: #ebf5fb;">
+                        <span class="iter-title" style="color: #2980b9;">📊 Traffic & State Dynamics (VictoriaMetrics)</span>
+                    </div>
+                    <div class="iter-body" style="display: flex; gap: 20px; flex-wrap: wrap; padding: 20px;">
+                """)
+                
+                if tp_data["time"]:
+                    chart_html.append(f"""
+                        <div style="flex: 1; min-width: 450px; background: #fff; padding: 15px; border: 1px solid #eee; border-radius: 8px;">
+                            <h4 style="text-align: center; color: #34495e; margin: 0 0 10px 0; font-size: 14px;">L2 Throughput Profile</h4>
+                            <div id="vm-throughput-chart" style="width: 100%; height: 320px;"></div>
+                        </div>
+                    """)
+                
+                if fs_data["time"]:
+                    chart_html.append(f"""
+                        <div style="flex: 1; min-width: 450px; background: #fff; padding: 15px; border: 1px solid #eee; border-radius: 8px;">
+                            <h4 style="text-align: center; color: #34495e; margin: 0 0 10px 0; font-size: 14px;">TCP Flow State Machine</h4>
+                            <div id="vm-flow-chart" style="width: 100%; height: 320px;"></div>
+                        </div>
+                    """)
+                chart_html.append("</div></div>")
+
+            # 🟢 БЛОК 2: ZABBIX HEALTH (Если есть данные)
+            zb_series = []
+            zb_legend = []
+            if zb_data.get("time"):
+                colors_cpu = ['#e74c3c', '#e67e22', '#f1c40f'] # Красные/Оранжевые для CPU
+                colors_ram = ['#9b59b6', '#3498db', '#2ecc71'] # Фиолетовые/Синие для RAM
+                
+                for idx, (hostname, metrics) in enumerate(zb_data["hosts"].items()):
+                    c_cpu = colors_cpu[idx % len(colors_cpu)]
+                    c_ram = colors_ram[idx % len(colors_ram)]
+                    
+                    zb_legend.extend([f'{hostname} CPU', f'{hostname} RAM'])
+                    
+                    zb_series.append({
+                        "name": f'{hostname} CPU', "type": "line", "showSymbol": False, 
+                        "itemStyle": {"color": c_cpu}, "data": metrics["cpu"]
+                    })
+                    zb_series.append({
+                        "name": f'{hostname} RAM', "type": "line", "yAxisIndex": 1, "showSymbol": False,
+                        "lineStyle": {"type": "dashed"}, "itemStyle": {"color": c_ram}, "data": metrics["ram"]
+                    })
+
+                chart_html.append(f"""
+                <div class="iter-card" style="border-top: 4px solid #8e44ad; margin-top: 30px;">
+                    <div class="iter-header" style="background: #f4ecf7;">
+                        <span class="iter-title" style="color: #8e44ad;">🏥 Infrastructure Health (Zabbix: {zb_tag})</span>
+                    </div>
+                    <div class="iter-body" style="padding: 20px;">
+                        <div id="zb-health-chart" style="width: 100%; height: 320px;"></div>
+                    </div>
+                </div>
+                """)
+
+            # 🟢 РЕНДЕР JS ДЛЯ ВСЕХ ГРАФИКОВ
+            if chart_html:
+                chart_html.append("""
+                    <script src="../static/echarts.min.js"></script>
+                    <script>
+                        document.addEventListener("DOMContentLoaded", function() {
+                """)
+                
+                if tp_data.get("time"):
+                    chart_html.append(f"""
+                            var tpElem = document.getElementById('vm-throughput-chart');
+                            if(tpElem) {{ echarts.init(tpElem).setOption({{
+                                tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }} }},
+                                legend: {{ data: ['TX (Gbps)', 'RX (Gbps)'], bottom: 5 }},
+                                grid: {{ top: 40, left: 50, right: 20, bottom: 60 }},
+                                xAxis: {{ type: 'category', data: {json.dumps(tp_data['time'])}, axisLabel: {{ formatter: function (v) {{ let d = new Date(parseInt(v)); return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0'); }} }} }},
+                                yAxis: {{ type: 'value', name: 'Gbps', nameGap: 15 }},
+                                series: [
+                                    {{ name: 'TX (Gbps)', type: 'line', showSymbol: false, itemStyle: {{color: '#2ecc71'}}, areaStyle: {{opacity: 0.1}}, data: {json.dumps(tp_data['tx'])} }},
+                                    {{ name: 'RX (Gbps)', type: 'line', showSymbol: false, itemStyle: {{color: '#27ae60'}}, data: {json.dumps(tp_data['rx'])} }}
+                                ]
+                            }}); }}
+                    """)
+
+                if fs_data.get("time"):
+                    chart_html.append(f"""
+                            var fsElem = document.getElementById('vm-flow-chart');
+                            if(fsElem) {{ echarts.init(fsElem).setOption({{
+                                tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }} }},
+                                legend: {{ data: ['Active Flows', 'CPS'], bottom: 5 }},
+                                grid: {{ top: 40, left: 75, right: 75, bottom: 60 }},
+                                xAxis: {{ type: 'category', data: {json.dumps(fs_data['time'])}, axisLabel: {{ formatter: function (v) {{ let d = new Date(parseInt(v)); return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0'); }} }} }},
+                                yAxis: [
+                                    {{ type: 'value', name: 'Flows', nameGap: 15, position: 'left', alignTicks: true, axisLine: {{show: true, lineStyle: {{color: '#3498db'}}}} }},
+                                    {{ type: 'value', name: 'CPS', nameGap: 15, position: 'right', alignTicks: true, splitLine: {{show: false}}, axisLine: {{show: true, lineStyle: {{color: '#e67e22'}}}} }}
+                                ],
+                                series: [
+                                    {{ name: 'Active Flows', type: 'line', showSymbol: false, itemStyle: {{color: '#3498db'}}, data: {json.dumps(fs_data['active_flows'])} }},
+                                    {{ name: 'CPS', type: 'line', yAxisIndex: 1, showSymbol: false, itemStyle: {{color: '#e67e22'}}, data: {json.dumps(fs_data['cps'])} }}
+                                ]
+                            }}); }}
+                    """)
+                    
+                if zb_data.get("time"):
+                    chart_html.append(f"""
+                            var zbElem = document.getElementById('zb-health-chart');
+                            if(zbElem) {{ echarts.init(zbElem).setOption({{
+                                tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }} }},
+                                legend: {{ data: {json.dumps(zb_legend)}, bottom: 5 }},
+                                grid: {{ top: 40, left: 50, right: 50, bottom: 60 }},
+                                xAxis: {{ type: 'category', data: {json.dumps(zb_data['time'])}, axisLabel: {{ formatter: function (v) {{ let d = new Date(parseInt(v)); return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0'); }} }} }},
+                                yAxis: [
+                                    {{ type: 'value', name: 'CPU %', nameGap: 15, position: 'left', max: 100, axisLine: {{show: true, lineStyle: {{color: '#e74c3c'}}}} }},
+                                    {{ type: 'value', name: 'RAM %', nameGap: 15, position: 'right', max: 100, splitLine: {{show: false}}, axisLine: {{show: true, lineStyle: {{color: '#9b59b6'}}}} }}
+                                ],
+                                series: {json.dumps(zb_series)}
+                            }}); }}
+                    """)
+
+                chart_html.append("});\n</script>")
+                target_health_html = "".join(chart_html)
+                
+        except Exception as e:
+            Log.error(f"[{self.__class__.__name__}] Не удалось сгенерировать графики: {e}")
 
         cleaned_log = self._read_and_clean_session_log(self.session_log_path)
         log_section_html = f'<div class="iter-card"><div class="iter-header"><span class="iter-title">Full Session Log</span></div><div class="iter-body" style="padding:0;"><pre class="log-view">{cleaned_log}</pre></div></div>'
 
         meta = self._load_session_meta()
         thresholds = meta.get('thresholds', {})
-        warn_val = float(thresholds.get('warn', 0.05))
-        fatal_val = float(thresholds.get('fatal', 0.1))
+        if is_cc_test:
+            warn_val = "N/A"
+            fatal_val = "(Stress to Failure)"
+        else:
+            warn_val = str(float(thresholds.get('warn', 0.05)))
+            fatal_val = str(float(thresholds.get('fatal', 0.1)))
 
         total_duration_str = "~"
         try: 
@@ -896,9 +1051,13 @@ class NGFWReportStrategy(BaseReportStrategy):
             peak_bw=peak_html, 
             warn_limit=warn_val, 
             fatal_limit=fatal_val,
-            overview_rows=overview_rows,
-            artifacts_section=unified_chart_html + artifacts_section_html, 
-            target_health_section=target_health_html,
-            log_section=log_section_html, 
+            
+            # ВОТ ЭТИ 5 СТРОК ДОЛЖНЫ БЫТЬ ОБЯЗАТЕЛЬНО:
+            certificate_section=unified_chart_html,   
+            chart_section=target_health_html,         
+            overview_rows=overview_rows,              
+            artifacts_section=artifacts_section_html, 
+            log_section=log_section_html,             
+            
             gen_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )

@@ -72,8 +72,10 @@ tr:hover td {{ background: #fdfdfd; }}
 """
 
 # ─────────────────────────────────────────────────────────────
-# 2. SESSION REPORT TEMPLATE
+# 2. SESSION REPORT TEMPLATES
 # ─────────────────────────────────────────────────────────────
+
+# СТАРЫЙ ШАБЛОН (Не трогаем, чтобы не сломать DDoS и прочее)
 SESSION_REPORT_TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
@@ -150,6 +152,7 @@ SESSION_REPORT_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
+# 🟢 НОВЫЙ ШАБЛОН NGFW (Execution Overview сразу после шапки)
 NGFW_SESSION_REPORT_TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
@@ -191,35 +194,41 @@ NGFW_SESSION_REPORT_TEMPLATE = """<!DOCTYPE html>
             </div>
         </div>
 
-        <h2 style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Execution Overview</span>
-            <span style="font-size: 13px; color: #7f8c8d; font-weight: normal;">
-                Limits Applied: <b style="color:#f39c12">Warn {warn_limit}</b> / <b style="color:#e74c3c">Fatal {fatal_limit}</b> %
-            </span>
-        </h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Target Profile</th>
-                    <th>Start Time</th>
-                    <th>Duration</th>
-                    <th>Load Config</th>
-                    <th>Throughput / RPS</th>
-                    <th>Latency Avg</th> 
-                    <th>Errors</th>
-                    <th>Status</th>
-                    <th>Health</th>
-                </tr>
-            </thead>
-            <tbody>
-                {overview_rows}
-            </tbody>
-        </table>
+        <div class="iter-card" style="margin-top: 30px;">
+            <div class="iter-header">
+                <span class="iter-title">Execution Overview</span>
+                <span style="font-size: 13px; color: #7f8c8d; font-family: monospace;">
+                    Limits Applied: <b style="color:#f39c12">Warn {warn_limit}</b> / <b style="color:#e74c3c">Fatal {fatal_limit}</b> %
+                </span>
+            </div>
+            <div class="iter-body" style="padding: 0; overflow-x: auto;">
+                <table style="margin: 0; border-bottom: none;">
+                    <thead>
+                        <tr>
+                            <th>Target Profile</th>
+                            <th>Start Time</th>
+                            <th>Duration</th>
+                            <th>Load Config</th>
+                            <th>Throughput / RPS</th>
+                            <th>Latency Avg</th> 
+                            <th>Errors</th>
+                            <th>Status</th>
+                            <th>Health</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {overview_rows}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        {certificate_section}
+
+        {chart_section}
 
         <h2>Artifacts & Downloads</h2>
         {artifacts_section}
-
-        {target_health_section}
 
         <h2>Session Details (Log)</h2>
         {log_section}
@@ -244,24 +253,24 @@ BASE_TEMPLATE = """<!DOCTYPE html>
     <title>PMI Dashboard</title>
     <style>
         """ + CSS_STYLES + """
-        .header {{ background: white; padding: 20px 40px; border-bottom: 1px solid #eee; display:flex; justify-content:space-between; align-items:center; }}
-        .header h1 {{ margin: 0; font-size: 24px; color: #2c3e50; border: none; padding: 0; }}
-        .dash-content {{ padding: 40px; }}
+        .header { background: white; padding: 20px 40px; border-bottom: 1px solid #eee; display:flex; justify-content:space-between; align-items:center; }
+        .header h1 { margin: 0; font-size: 24px; color: #2c3e50; border: none; padding: 0; }
+        .dash-content { padding: 40px; }
        
-        .day-group {{ margin-bottom: 40px; }}
-        .day-header {{ display: flex; align-items: center; margin-bottom: 15px; padding-left: 10px; border-left: 4px solid #3498db; }}
-        .day-title {{ font-size: 20px; font-weight: 700; color: #2c3e50; margin-right: 15px; }}
+        .day-group { margin-bottom: 40px; }
+        .day-header { display: flex; align-items: center; margin-bottom: 15px; padding-left: 10px; border-left: 4px solid #3498db; }
+        .day-title { font-size: 20px; font-weight: 700; color: #2c3e50; margin-right: 15px; }
        
-        .run-card {{ background: white; border-radius: 8px; padding: 20px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); border-left: 5px solid #ccc; transition: transform 0.2s; }}
-        .run-card:hover {{ transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.08); }}
-        .run-card.has-report {{ border-left-color: #2ecc71; }}
-        .run-card.no-report {{ border-left-color: #e74c3c; }}
+        .run-card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); border-left: 5px solid #ccc; transition: transform 0.2s; }
+        .run-card:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.08); }
+        .run-card.has-report { border-left-color: #2ecc71; }
+        .run-card.no-report { border-left-color: #e74c3c; }
        
-        .run-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
-        .run-time {{ font-weight: 700; font-size: 18px; color: #2c3e50; }}
-        .run-id {{ font-family: monospace; color: #95a5a6; font-size: 13px; background: #f8f9fa; padding: 2px 6px; border-radius: 4px; }}
+        .run-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .run-time { font-weight: 700; font-size: 18px; color: #2c3e50; }
+        .run-id { font-family: monospace; color: #95a5a6; font-size: 13px; background: #f8f9fa; padding: 2px 6px; border-radius: 4px; }
        
-        .empty-state {{ text-align: center; padding: 60px; color: #bdc3c7; border: 2px dashed #eee; border-radius: 10px; }}
+        .empty-state { text-align: center; padding: 60px; color: #bdc3c7; border: 2px dashed #eee; border-radius: 10px; }
     </style>
 </head>
 <body>

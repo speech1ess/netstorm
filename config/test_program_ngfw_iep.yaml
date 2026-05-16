@@ -7,7 +7,7 @@
 program:
   description: "NGFW: Матрица деградации, емкость, инфраструктурная устойчивость"
   dut:
-    label: "Континент 4 (v.4.2.1.-758)" # "UserGate DCFW E1010 [L3 Inline Mode]" # "--=Calibration run=--"
+    label: "UserGate DCFW E3010 (UGOS 8.0.0.361689R) [FW, AppID, IPS, GeoIP]" # "Континент 4 (v.4.2.1.-758)" # "UserGate DCFW E1010 [L3 Inline Mode]" # "--=Calibration run=--"
     type: "NGFW"
     mgmt_ip: "10.0.40.5"  # healthcheck
     datapath:
@@ -155,7 +155,7 @@ scenarios:
       repeats: 5          
       interval: 30        
       template:
-        duration: 180
+        duration: 240
         actors:
           - <<: *TRex_ASTF
             profile: astf_udp_cps
@@ -183,7 +183,7 @@ scenarios:
       repeats: 5          
       interval: 30        
       template:
-        duration: 180
+        duration: 240
         actors:
           - <<: *TRex_ASTF
             profile: astf_tcp_cps
@@ -211,7 +211,7 @@ scenarios:
       repeats: 5          
       interval: 30        
       template:
-        duration: 180
+        duration: 240
         actors:
           - <<: *TRex_ASTF
             profile: astf_http_cps
@@ -240,7 +240,7 @@ scenarios:
       repeats: 5         # Количество ступенек (например, 10 ступенек дойдут до 10M PPS)
       interval: 30        # Длительность одной ступеньки
       template:
-        duration: 180
+        duration: 240
         actors:
           - tool: "trex"
             profile: "udp_flood_64b"
@@ -261,7 +261,7 @@ scenarios:
       label: "TCP CPS Limit Binary Search [SYN5_TCP_BIN] (10k-200k CPS)"
       prompt: "[INFO]: L4 Mode. Автоматический поиск потолка TCP CPS."
       health_check: true
-      duration: 180       
+      duration: 240       
       interval: 30       
       series:
         type: "binary_search"
