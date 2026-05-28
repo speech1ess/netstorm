@@ -55,7 +55,6 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────
 class TRexServiceManager:
     def __init__(self):
-        # 🟢 Исправлено под твой global.yaml (якоря &trex_base)
         proc_cfg = SharedConfig.get('nodes.trex_node.proc', {})
         self.svc_stl = proc_cfg.get('trex-stl', {}).get('service_name', 'trex-2')
         self.svc_astf = proc_cfg.get('trex-astf', {}).get('service_name', 'trex-2-astf')
@@ -79,8 +78,8 @@ class TRexServiceManager:
             Log.error(f"Failed to start {target_svc}! Is the systemd unit configured correctly?")
             sys.exit(1)
             
-        Log.info("Waiting 15 seconds for DPDK and RPC server to initialize...")
-        time.sleep(15)
+        Log.info("Waiting 30 seconds for DPDK and RPC server to initialize...")
+        time.sleep(30)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -97,35 +96,29 @@ class TRexTelemetry:
         if ip := mon.get('net', {}).get('ip'):
             port = mon.get('services', {}).get('victoria_api', {}).get('port', 8428)
             self.push_url = f"http://{ip}:{port}/api/v1/import/prometheus"
-            # 🟢 ДОБАВЛЕН ЛОГ: Сразу видим, правильный ли URL
             Log.info(f"📡 Telemetry Push URL: {self.push_url}") 
         else:
             Log.warning("⚠️ Telemetry DISABLED: Monitor IP not found in global.yaml")
 
-        # --- ФОНОВЫЙ ВОРКЕР ---
         self.queue = queue.Queue(maxsize=1000) 
         if self.push_url:
             self.worker = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker.start()
 
     def _worker_loop(self):
-        """Читает очередь в фоне и шлет метрики. Пишет ошибки, если база легла."""
         while True:
             try:
                 lines = self.queue.get()
                 if lines is None: break 
                 
-                # 🟢 ФИКС: Обязательный перенос строки в конце payload
                 payload = "\n".join(lines) + "\n"
-                
-                # 🟢 ФИКС: Таймаут увеличен до 2с, чтобы база успела ответить
                 resp = requests.post(self.push_url, data=payload, timeout=2)
                 
                 if resp.status_code >= 400:
                     Log.error(f"🔴 VictoriaMetrics Error {resp.status_code}: {resp.text}")
                     
             except requests.exceptions.Timeout:
-                pass # Сетевые задержки игнорим, чтобы не спамить в консоль
+                pass 
             except Exception as e:
                 Log.error(f"🔴 Telemetry Worker Exception: {e}")
             finally:
@@ -155,20 +148,16 @@ class TRexTelemetry:
         timestamp = int(time.time() * 1000)
         lines = []
         lbl = f'run_id="{self.run_id}",session="{self.session_id}",profile="{self.profile}"'
-        
         metrics = {}
 
-        # Вытаскиваем словари (с фоллбэками на разные версии TRex)
         total_stats = stats.get('global', stats.get('total', {}))
         client = stats.get('traffic', {}).get('client', {})
 
-        # Умный парсинг скорости (Берем из Total, если нет - из Client)
         l2_tx_bps = total_stats.get('tx_bps', 0)
         l2_rx_bps = total_stats.get('rx_bps', 0)
         if l2_tx_bps == 0: l2_tx_bps = client.get('m_tx_bps', 0)
         if l2_rx_bps == 0: l2_rx_bps = client.get('m_rx_bps', 0)
 
-        # 1. L7 (Application) & General Traffic Stats
         metrics.update({
             "netstorm_astf_active_flows": client.get('tcps_connattempt', 0) - client.get('tcps_closed', 0),
             "netstorm_astf_cps": client.get('tcps_connattempt', 0),
@@ -177,14 +166,12 @@ class TRexTelemetry:
             "netstorm_astf_l7_drops": client.get('tcps_drops', 0)
         })
 
-        # 2. L2 (Physical) Stats
         metrics.update({
             "netstorm_l2_tx_bps": l2_tx_bps,
             "netstorm_l2_rx_bps": l2_rx_bps,
             "netstorm_l2_drop_bps": total_stats.get('rx_drop_bps', 0)
         })
 
-        # 3. Latency (Парсинг гистограмм по портам, конвертация usec -> ms)
         if latency := stats.get('latency'):
             max_delays = []
             avg_delays = []
@@ -199,7 +186,6 @@ class TRexTelemetry:
                     "netstorm_latency_avg_ms": (sum(avg_delays) / len(avg_delays)) / 1000.0
                 })
 
-        # 4. Malware / IPS (Поиск в Traffic Groups) 
         client_traffic = stats.get('traffic', {}).get('client', {})
         tg_names = client_traffic.get('tg_names', {})
         malware = tg_names.get('malware', {})
@@ -207,19 +193,13 @@ class TRexTelemetry:
         if malware:
             mc = malware.get('client', {})
             ms = malware.get('server', {})
-            
-            # 1. Отправлено малвари (TCP attempts + UDP sent packets)
             m_tx_tcp = mc.get('tcps_connattempt', 0)
             m_tx_udp = mc.get('udps_sndpkt', 0)
             malware_sent = m_tx_tcp + m_tx_udp
             
-            # 2. Заблокировано TCP (drops + testdrops)
             m_drops_tcp = mc.get('tcps_drops', 0) + mc.get('tcps_testdrops', 0)
-            
-            # 3. Заблокировано UDP (Двусторонняя проверка потери пакетов)
             m_udp_c2s_drops = max(0, m_tx_udp - ms.get('udps_rcvpkt', 0))
             m_udp_s2c_drops = max(0, ms.get('udps_sndpkt', 0) - mc.get('udps_rcvpkt', 0))
-            
             ips_blocks = m_drops_tcp + m_udp_c2s_drops + m_udp_s2c_drops
             
             metrics.update({
@@ -227,13 +207,11 @@ class TRexTelemetry:
                 "netstorm_ips_blocked": ips_blocks
             })
             
-        # 5. TCP Health (Ретрансмиты - индикатор переполнения буферов SUT)
         metrics.update({
             "netstorm_tcp_rexmit_pkts": client.get('tcps_sndrexmitpack', 0),
             "netstorm_tcp_rexmit_bytes": client.get('tcps_sndrexmitbyte', 0)
         })
 
-        # Безопасный парсинг значений
         for k, v in metrics.items():
             if v is not None:
                 try:
@@ -273,15 +251,11 @@ class TRexDriver:
         self.svc_manager = TRexServiceManager()
 
     def detect_mode(self) -> str:   
-        """Гибридный детектор: Имя файла + Строгие импорты API"""
         fname = os.path.basename(self.profile_path).lower()
-        
-        # 1. Проверяем префикс
         name_mode = 'unknown'
         if 'astf_' in fname: name_mode = 'astf'
         elif 'stl_' in fname: name_mode = 'stl'
 
-        # 2. Проверяем содержимое (строгие импорты TRex API)
         content_mode = 'unknown'
         try:
             with open(self.profile_path, 'r', encoding='utf-8') as f:
@@ -293,10 +267,8 @@ class TRexDriver:
         except Exception as e:
             Log.warning(f"Failed to read profile for detection: {e}")
 
-        # 3. Принимаем решение (Импорты бьют имя файла)
         final_mode = content_mode if content_mode != 'unknown' else (name_mode if name_mode != 'unknown' else 'stl')
 
-        # 4. Воспитываем
         if content_mode != 'unknown':
             if name_mode == 'unknown':
                 Log.warning(f"TRex: Поняли, что это {content_mode.upper()}, но имя '{fname}' ни о чем не говорит. Добавь префикс 'astf_' или 'stl_'.")
@@ -320,7 +292,6 @@ class TRexDriver:
             self._run_stl()
 
     def _build_l3_config(self):
-        """Динамически собирает L3 настройки из global.yaml"""
         l3_cfg = {}
         interfaces = SharedConfig.get('nodes.trex_node.net.interfaces', {})
         networks = SharedConfig.get('networks', {})
@@ -348,6 +319,13 @@ class TRexDriver:
             stop_event.set()
             
         SharedTrap.register(cleanup)
+
+        # 🟢 АВТОСТОП: Инициализация переменных для Continuous Sweep
+        auto_stop_enabled = str(self.tunables.get('auto_stop', 'false')).lower() in ['true', '1', 'yes']
+        if auto_stop_enabled:
+            Log.info("⚡ Auto-Stop (Continuous Sweep) is ENABLED. Will monitor RX saturation.")
+        saturation_ticks = 0
+        prev_rx_pps = 0
 
         try:
             c.connect()
@@ -380,7 +358,6 @@ class TRexDriver:
             
             start_ts = time.time()
             last_log_ts = 0
-
             session_peak_bps = 0.0
 
             while c.is_traffic_active():
@@ -391,7 +368,6 @@ class TRexDriver:
                 try:
                     stats = c.get_stats()
                     
-                    # 1. Проверяем, жив ли фоновый поток телеметрии
                     if hasattr(self, 'telemetry') and self.telemetry.push_url:
                         if not self.telemetry.worker.is_alive():
                             Log.warning(f"[{elapsed:3d}s] TELEMETRY WORKER IS DEAD!")
@@ -405,37 +381,46 @@ class TRexDriver:
                         tx_pps = total_stats.get('tx_pps', 0)
                         rx_pps = total_stats.get('rx_pps', 0)
 
-                        # 🟢 ИСПОЛЬЗУЕМ АБСОЛЮТНЫЕ СЧЕТЧИКИ ДЛЯ ТОЧНОСТИ (Одометр, а не спидометр)
                         opackets = total_stats.get('opackets', 0)
                         ipackets = total_stats.get('ipackets', 0)
 
-                        # 🟢 ВЫЧИСЛЯЕМ L2 ДРОПЫ ПО СУММЕ ПАКЕТОВ (защита от микро-задержек)
                         drops_total = max(0, opackets - ipackets)
                         drop_pct = (drops_total / opackets * 100.0) if opackets > 0 else 0.0
 
-                        # ОБНОВЛЯЕМ ПИК
                         if tx_bps > session_peak_bps:
                             session_peak_bps = tx_bps
                             
-                        # Форматируем биты
                         tx_str = f"{tx_bps/1e9:.2f}G" if tx_bps > 1e9 else f"{tx_bps/1e6:.1f}M"
                         rx_str = f"{rx_bps/1e9:.2f}G" if rx_bps > 1e9 else f"{rx_bps/1e6:.1f}M"
-                        
-                        # Форматируем пакеты
                         tx_p_str = f"{tx_pps/1e6:.2f}M" if tx_pps >= 1e6 else f"{tx_pps/1e3:.1f}K"
                         rx_p_str = f"{rx_pps/1e6:.2f}M" if rx_pps >= 1e6 else f"{rx_pps/1e3:.1f}K"
                         
                         sys.stdout.flush()
                         
-                        # 🟢 ВЫВОДИМ ДРОПЫ В КОНСОЛЬ
                         Log.info(f"[{elapsed:3d}s] STL TRAFFIC | TX: {tx_str}bps ({tx_p_str}pps) | RX: {rx_str}bps ({rx_p_str}pps) | Drops: {drop_pct:.4f}%")                        
                         last_log_ts = now
                         
+                        # 🟢 АВТОСТОП ЛОГИКА (Continuous Sweep)
+                        # Даем 15 секунд на разгон и установление сессий
+                        if auto_stop_enabled and elapsed > 15:
+                            # Проверяем, что льем хотя бы 1000 pps, чтобы не ловить шум
+                            # И смотрим, вырос ли RX хотя бы на 2% за этот такт (3 сек)
+                            if tx_pps > 1000 and (rx_pps - prev_rx_pps) <= (prev_rx_pps * 0.02):
+                                saturation_ticks += 1
+                            else:
+                                saturation_ticks = 0
+                                
+                            # Если RX не растет 3 проверки подряд (около 9 секунд) - это полка
+                            if saturation_ticks >= 3:
+                                Log.warning(f"🛑 AUTO-STOP: Обнаружено плато по RX PPS ({rx_p_str}pps). Достигнут предел DUT. Завершаем тест досрочно.")
+                                break # Выходим из цикла, TRex остановится грациозно
+                                
+                            prev_rx_pps = rx_pps
+
                 except Exception as e:
-                    # 3. Печатаем ВСЕ ошибки без ограничений по времени!
                     Log.error(f"[{elapsed:3d}s] CRITICAL ASTF Stats Error: {e}")
                     import traceback
-                    traceback.print_exc() # Выплевываем полный трейсбэк
+                    traceback.print_exc() 
                     sys.stdout.flush()
 
                 if elapsed > self.duration + 5: 
@@ -449,8 +434,6 @@ class TRexDriver:
                 c.stop(ports=self.ports)
                 try: 
                     final_stats = c.get_stats(ports=self.ports)
-                    
-                    # 🟢 Агрегация L2 пакетов
                     total = final_stats.get('total', {})
                     final_stats['tx_pkts'] = total.get('opackets', 0) 
                     final_stats['rx_pkts'] = total.get('ipackets', 0)
@@ -460,7 +443,6 @@ class TRexDriver:
                     
                     final_stats['custom_peak_bps'] = session_peak_bps
 
-                    # 🟢 ЖЕСТКАЯ АДРЕСАЦИЯ
                     log_name_base = getattr(self.telemetry, 'run_id', 'unknown_run')
                     stats_filename = f"stats_{log_name_base}.json"
                     
@@ -475,19 +457,16 @@ class TRexDriver:
                     
                     Log.info(f"💾 Attempting to save JSON artifact to: {save_path}")
                     
-                    # 🟢 FORCE DISK FLUSH (Фикс Race Condition)
                     with open(save_path, 'w', encoding='utf-8') as f:
                         json.dump(final_stats, f, indent=2)
-                        f.flush()            # Сбрасываем буфер Питона в ОС
-                        os.fsync(f.fileno()) # Приказываем ядру Linux сбросить кэш на диск
+                        f.flush()            
+                        os.fsync(f.fileno()) 
 
                     Log.success(f"📊 [Telemetry] Final STL stats successfully dumped to {save_path}")
 
                 except Exception as e: 
-                    # 🟢 ТОТ САМЫЙ EXCEPT, КОТОРЫЙ Я СРЕЗАЛ В ПРОШЛЫЙ РАЗ!
                     Log.error(f"⚠️ [FATAL I/O ERROR] Failed to process/write JSON: {e}")
                     
-                # Освобождаем порты ВНЕ блока try-except
                 c.release(ports=self.ports)
                 
             if hasattr(self, 'telemetry'):
@@ -511,6 +490,13 @@ class TRexDriver:
             
         SharedTrap.register(cleanup)
 
+        # 🟢 АВТОСТОП: Инициализация переменных
+        auto_stop_enabled = str(self.tunables.get('auto_stop', 'false')).lower() in ['true', '1', 'yes']
+        if auto_stop_enabled:
+            Log.info("⚡ Auto-Stop (Continuous Sweep) is ENABLED. Will monitor RX BPS saturation.")
+        saturation_ticks = 0
+        prev_rx_bps = 0
+
         try:
             c.connect()
             c.reset()
@@ -525,7 +511,6 @@ class TRexDriver:
             
             c.load_profile(profile)
             Log.info(f"Starting ASTF traffic... CPS: {self.mult_str} x1000, Duration: {self.duration}s")
-            # Добавляем поддержку latency из tunables или по дефолту
             latency_pps = self.tunables.get('latency_pps', 1000)
             c.start(mult=float(self.mult_str), duration=self.duration, latency_pps=latency_pps)
             
@@ -535,7 +520,6 @@ class TRexDriver:
             last_udp_flows = 0
             session_peak_bps = 0.0
             
-            # 🟢 ПЕРЕМЕННАЯ ДЛЯ ХРАНЕНИЯ ЧИСТОГО СНИМКА МЕТРИК
             clean_stats = None
 
             while c.is_traffic_active() and not stop_event.is_set():
@@ -547,10 +531,8 @@ class TRexDriver:
                 try:
                     stats = c.get_stats()
                     
-                    # 🟢 МАГИЯ: Делаем слепок за 3 секунды до конца (до того, как TRex порубит TCP)
                     if time_left <= 3 and clean_stats is None:
                         clean_stats = copy.deepcopy(stats)
-                        # Обогащаем слепок тегами TG Stats прямо здесь, пока профиль жив
                         try:
                             if hasattr(c, 'get_tg_names'):
                                 tg_names = c.get_tg_names()
@@ -577,7 +559,6 @@ class TRexDriver:
                         if tx_bps == 0: tx_bps = client.get('m_tx_bps', 0)
                         if rx_bps == 0: rx_bps = client.get('m_rx_bps', 0)
                         
-                        # 🟢 ОБНОВЛЯЕМ ПИК
                         if tx_bps > session_peak_bps:
                             session_peak_bps = tx_bps
                             
@@ -615,6 +596,20 @@ class TRexDriver:
                         sys.stdout.flush()
                         last_log_ts = now
 
+                        # 🟢 АВТОСТОП ЛОГИКА (Continuous Sweep)
+                        if auto_stop_enabled and elapsed > 15:
+                            # Проверяем плато по RX BPS (если льем больше 10 Мбит/с)
+                            if tx_bps > 10_000_000 and (rx_bps - prev_rx_bps) <= (prev_rx_bps * 0.02):
+                                saturation_ticks += 1
+                            else:
+                                saturation_ticks = 0
+                                
+                            if saturation_ticks >= 3:
+                                Log.warning(f"🛑 AUTO-STOP: Обнаружено плато по RX BPS ({rx_str}bps). Достигнут предел DUT. Завершаем тест досрочно.")
+                                break # Выходим из цикла, TRex остановится грациозно
+                                
+                            prev_rx_bps = rx_bps
+
                 except Exception as e:
                     Log.error(f"[{elapsed:3d}s] ASTF Stats Error: {e}")
                     sys.stdout.flush()
@@ -623,25 +618,22 @@ class TRexDriver:
                     Log.warning("Duration exceeded limit. Breaking loop.")
                     break
 
-            # 🟢 ДИАГНОСТИКА: Почему мы вышли из цикла?
             if stop_event.is_set():
                  Log.warning("Traffic loop aborted by Kill Switch (SIGTERM/SIGINT received).")
             elif elapsed > self.duration + 5:
                  Log.warning(f"Traffic loop ended by Timeout. Elapsed: {elapsed}s, Limit: {self.duration + 5}s.")
             elif not c.is_traffic_active():
                  Log.success(f"Traffic loop ended. TRex finished transmission after {elapsed}s.")
+            elif saturation_ticks >= 3:
+                 Log.success(f"Traffic loop ended early via AUTO-STOP. Elapsed: {elapsed}s.")
             else:
                  Log.error(f"Traffic loop ended abnormally! Unknown reason. Elapsed: {elapsed}s.")
             
             if c.is_connected():
                 c.stop()
                 try: 
-                    # 🟢 ИСПОЛЬЗУЕМ СНИМОК ЕСЛИ ЕСТЬ, ИНАЧЕ БЕРЕМ ГРЯЗНЫЕ ДАННЫЕ
                     final_stats = clean_stats if clean_stats else c.get_stats()
                     
-                    # =========================================================
-                    # 🟢 DATA-DRIVEN: ЭКСТРАКЦИЯ ТЕГОВ (Если снимок не сработал)
-                    # =========================================================
                     if not clean_stats:
                         try:
                             if hasattr(c, 'get_tg_names'):
@@ -653,22 +645,18 @@ class TRexDriver:
                                         Log.success("🎯 ASTF TG Stats successfully injected into telemetry payload.")
                         except Exception as e:
                             Log.error(f"⚠️ [Driver] Failed to fetch ASTF TG stats via RPC: {e}")
-                    # =========================================================
 
-                    # Телеметрию пушим уже после обогащения объекта (хорошая практика SSoT)
                     if hasattr(self, 'telemetry'):
                         self.telemetry.push_astf(final_stats, getattr(self, 'ports', []))
                     
                     final_stats['custom_peak_bps'] = session_peak_bps
 
-                    # 🟢 СБРОС ФИНАЛЬНОЙ ТЕЛЕМЕТРИИ В JSON
                     log_name_base = getattr(self.telemetry, 'run_id', 'unknown_run')
                     
                     session_id = os.environ.get("PMI_RUN_ID", "unknown_session")
                     log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), session_id)
                     os.makedirs(log_dir, exist_ok=True)
                     
-                    # Формируем имя файла
                     stats_filename = f"stats_{log_name_base}.json"
                     
                     with open(os.path.join(log_dir, stats_filename), 'w', encoding='utf-8') as f:
@@ -700,12 +688,10 @@ def parse_tunables(raw_json_str):
                     net = ipaddress.IPv4Network(v, strict=False)
                     prefix = k.replace('_pool', '')
                     
-                    # Если это одиночный IP (или /32), у него всего 1 адрес [0]
                     if net.num_addresses == 1:
                         params[f'{prefix}_start'] = str(net[0])
                         params[f'{prefix}_end'] = str(net[0])
                     else:
-                        # Если это нормальная подсеть, берем первый [1] и последний [-2]
                         params[f'{prefix}_start'] = str(net[1])
                         params[f'{prefix}_end'] = str(net[-2])
                         
@@ -732,7 +718,6 @@ if __name__ == "__main__":
     duration     = int(sys.argv[3])
     log_name_base = sys.argv[4]
     
-    # 🟢 Парсим tunables и передаём в драйвер
     tunables = parse_tunables(sys.argv[5]) if len(sys.argv) >= 6 else {}
     Log.info(f"TREX DRIVER START: {os.path.basename(profile_path)}")
 

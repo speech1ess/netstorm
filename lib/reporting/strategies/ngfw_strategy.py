@@ -27,12 +27,19 @@ class NGFWReportStrategy(BaseReportStrategy):
 
         malware_logs = set()
         mult_map = {}
+        jmeter_map = {}
         hc_map = {}         # 🟢 Вместо списка делаем словарь
         active_log = None   # 🟢 Трекаем лог текущей итерации
 
         if os.path.exists(self.session_log_path):
             with open(self.session_log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
+                    if '-JTARGET_RPS=' in line and '-Jrun_id=' in line:
+                        m_rps = re.search(r'-JTARGET_RPS=(\d+)', line)
+                        m_id = re.search(r'-Jrun_id=([^\s]+)', line)
+                        if m_rps and m_id:
+                            jmeter_map[m_id.group(1) + '.log'] = m_rps.group(1)
+
                     if 'TRex command generated:' in line:
                         m_cmd = re.search(r'\.py\s+([\d\.]+)\s+\d+\s+([^\s{]+)', line)
                         if m_cmd:
@@ -69,7 +76,8 @@ class NGFWReportStrategy(BaseReportStrategy):
                 if a['log'] in mult_map:
                     a['mult'] = mult_map[a['log']]
                 
-                # 🟢 Забираем иконку строго по имени лога, никаких смещений индексов
+                if a['log'] in jmeter_map:
+                    a['load'] = jmeter_map[a['log']]
                 a['hc_icon'] = hc_map.get(a['log'], '') 
 
         return data
@@ -237,7 +245,7 @@ class NGFWReportStrategy(BaseReportStrategy):
         ev = {'status_txt': 'UNKNOWN', 'status_cls': 'status-fail', 'err_style': 'color:#ccc;'}
         p_name = actor.get('profile', 'unknown')
         
-        is_baseline = 'BASELINE' in p_name
+        is_baseline = 'BASELINE' in p_name.upper()
         is_ips = actor.get('is_ips', False)
 
         if is_ips:
@@ -250,7 +258,7 @@ class NGFWReportStrategy(BaseReportStrategy):
             ev['display_name'] = f"{p_name}"
             ev['row_style'] = ""
 
-        # 🟢 DATA-DRIVEN: Читаем замороженные лимиты сессии
+        # DATA-DRIVEN: Читаем замороженные лимиты сессии
         meta = self._load_session_meta()
         thresholds = meta.get('thresholds', {})
         warn_limit = float(thresholds.get('warn', 0.05))
@@ -258,146 +266,173 @@ class NGFWReportStrategy(BaseReportStrategy):
         
         ev['hc_icon'] = actor.get('hc_icon', '-')
 
-        # 🟢 ФИКС: Динамическое форматирование сверхмалых процентов
+        # Динамическое форматирование сверхмалых процентов
         def format_pct(pct):
             if pct > 0 and pct < 0.01:
                 return f"{pct:.5f}"
             return f"{pct:.2f}"
 
         if actor['tool'] == 'JMETER':
-            ev['load_config'] = f"<b>JMETER</b>: {actor['load']} RPS"
-            ev['rps_display'] = f"{actual_rps:,.1f}" + (f" / {actor['load']}" if actor['load'] and actor['load'] != '?' else "")
+            target_load = actor.get('load', '?')
             
-            if errors >= fatal_limit:
+            ev['load_config'] = f"<b>JMETER</b>: {target_load} RPS"
+            
+            if str(target_load) != '?':
+                ev['rps_display'] = f"{actual_rps:,.1f} / {target_load}"
+            else:
+                ev['rps_display'] = f"{actual_rps:,.1f}"
+            
+            # Высчитываем честный процент ошибок
+            error_pct = (errors / total * 100.0) if total > 0 else (100.0 if errors > 0 else 0.0)
+
+            if error_pct >= fatal_limit:
                 ev['status_txt'], ev['status_cls'] = "FAIL", "status-fail"
-                ev['err_style'], ev['err_display'] = "color:#e74c3c; font-weight:bold;", f"{errors} err"
-            elif errors >= warn_limit:
+                ev['err_style'], ev['err_display'] = "color:#e74c3c; font-weight:bold;", f"{errors} err ({error_pct:.2f}%)"
+            elif error_pct >= warn_limit:
                 ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
-                ev['err_style'], ev['err_display'] = "color:#f39c12; font-weight:bold;", f"{errors} err"
+                ev['err_style'], ev['err_display'] = "color:#f39c12; font-weight:bold;", f"{errors} err ({error_pct:.2f}%)"
             else:
                 ev['status_txt'], ev['status_cls'] = "PASS", "status-pass"
                 ev['err_style'], ev['err_display'] = "color:#27ae60; font-weight:bold;", f"{errors} err"
 
         elif actor['tool'] == 'TREX':
             mult = actor.get('mult', '?')
-            # 🟢 ФИКС: Умная подстановка pps/cps
-            unit = "pps" if ('UDP_PPS' in p_name or 'STL' in p_name) else "cps"
-            ev['load_config'] = f"TREX: {mult}x1000 {unit}"
             
+            # Определяем единицы измерения (pps vs cps)
+            is_pps_test = any(k in p_name.lower() for k in ['pps', 'stl', 'flood'])
+            unit = "pps" if is_pps_test else "cps"
+            ev['load_config'] = f"TREX: {mult}x1000 {unit}"
+            # Распознаем атакующий профиль
+            is_attack_profile = 'FLOOD' in p_name.upper() or 'DOS' in p_name.upper()
+
             tx_bw = stats.get('max_tx_bw', '0 bps')
+            pps = stats.get('pps', 0)
             drops = stats.get('astf_drops', 0)
             drop_pct = stats.get('drop_pct', 0.0)
             malware_drops = stats.get('malware_drops', 0)
             malware_tx = stats.get('malware_tx', 0)
             
-            ev['rps_display'] = f"Max TX: {tx_bw}"
+            # Динамический вывод в колонку Throughput / RPS
+            if is_pps_test:
+                pps_str = f"{pps/1e6:.2f} Mpps" if pps >= 1e6 else f"{pps/1e3:.2f} Kpps"
+                ev['rps_display'] = pps_str
+            else:
+                ev['rps_display'] = f"Max TX: {tx_bw}"
             
             # Проброс задержки в интерфейс
             lat_ms = stats.get('latency_ms', 0.0)
             ev['response_time'] = f"{lat_ms:.2f} ms" if lat_ms > 0 else "N/A"
 
-            if is_ips:
-                malware_pct = (malware_drops / malware_tx * 100.0) if malware_tx > 0 else 0.0
-                
-                ev['err_display'] = (
-                    f"Legit Drops: {drops} ({format_pct(drop_pct)}%)<br>"
-                    f"<span style='color:#696969; font-size:0.8em; font-style:italic;'>"
-                    f"Malware Blocked: {malware_drops} ({malware_pct:.1f}%)</span>"
-                )
-
-                # Строгая Data-Plane логика (игнорируем Control Plane, как в sc_logic.py)
-                if drop_pct >= fatal_limit:
-                    ev['status_txt'], ev['status_cls'] = "DoS", "status-fail"
-                    ev['err_style'] = "color:#e74c3c; font-weight:bold;"
-                elif drop_pct >= warn_limit:
-                    ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
-                    ev['err_style'] = "color:#f39c12; font-weight:bold;"
-                else:
-                    if malware_drops > 0:
-                        ev['status_txt'], ev['status_cls'] = "SECURED", "status-blocked"
-                        ev['err_style'] = "color:#2980b9; font-weight:bold;"
-                    else:
-                        ev['status_txt'], ev['status_cls'] = "BYPASSED", "status-fail"
-                        ev['err_style'] = "color:#e74c3c; font-weight:bold;"
-            # 🟢 НОВАЯ ЛОГИКА: Интеллектуальный поиск точки излома емкости (MAX_CC)
-            elif 'max_cc' in p_name.lower():
-                ts_flows = stats.get('time_series', {}).get('active_flows', [])
-                ts_drops = stats.get('time_series', {}).get('drops', [])
-                
-                real_max_cc = 0
-                break_drops = 0
-                limit_hit = False
-                
-                # Идем по оси времени (как на графике)
-                for i in range(len(ts_flows)):
-                    c_flows = ts_flows[i]
-                    c_drops = ts_drops[i]
-                    
-                    # Считаем, сколько дропов нам разрешено иметь в эту секунду
-                    # Берем минимум 10, чтобы микро-скачок не зарубил тест раньше времени
-                    allowed_drops = max(10, c_flows * (fatal_limit / 100.0))
-                    
-                    if c_drops > allowed_drops:
-                        limit_hit = True
-                        break_drops = c_drops # Запоминаем, сколько дропов было в момент смерти
-                        break # 🛑 Фаервол сдох! Останавливаем счетчик
-                    
-                    if c_flows > real_max_cc:
-                        real_max_cc = c_flows
-                
-                # Если лимит не пробит, берем просто максимум дропов (для Steady State)
-                if not limit_hit and ts_drops:
-                    break_drops = max(ts_drops)
-
-                # Форматируем красивую циферку
-                cc_formatted = f"{real_max_cc/1e6:.2f}M" if real_max_cc >= 1e6 else f"{real_max_cc:,.0f}".replace(',', ' ')
-                
-                # Сохраняем это честное значение в eval, чтобы потом и в шапку его подставить
-                ev['real_max_cc'] = real_max_cc
-                
-                if limit_hit or (real_max_cc == 0):
-                    # Потолок достигнут и пробит
-                    ev['status_txt'], ev['status_cls'] = "LIMIT FOUND", "status-warning" 
-                    ev['err_style'] = "color:#8e44ad; font-weight:bold;" 
-                    ev['err_display'] = f"Capped at ~{cc_formatted} CC<br><span style='font-size:0.8em; color:#e74c3c;'>Broke at {break_drops} drops</span>"
-                    ev['hc_icon'] = '<span title="State Table Exhausted" style="color:#8e44ad; font-weight:bold; font-size:1.1em;">🚧 Exhausted</span>'
-                else:
-                    # Влили всё, фаервол не упал
-                    ev['status_txt'], ev['status_cls'] = "NOT REACHED", "status-pass" 
-                    ev['err_style'] = "color:#27ae60; font-weight:bold;"
-                    ev['err_display'] = f"Peak: {cc_formatted} CC<br><span style='font-size:0.8em; color:#7f8c8d;'>Steady State: {break_drops} drops</span>"
-                    ev['hc_icon'] = '<span title="Capacity Not Reached" style="color:#27ae60; font-weight:bold; font-size:1.1em;">✅ Stable</span>'
+            if is_attack_profile:
+                ev['status_txt'], ev['status_cls'] = "ATTACK", "status-blocked"
+                ev['err_style'] = "color:#8e44ad; font-weight:bold;"
+                ev['err_display'] = f"Flood Drops: {drops} ({format_pct(drop_pct)}%)"
+                # Заменяем иконку хелсчека (TRex тут атакующий, а не жертва)
+                ev['hc_icon'] = '<span title="Attack Generator">🗡️ Attacker</span>'
             else:
-                ev['err_display'] = f"Drops: {drops} ({format_pct(drop_pct)}%)" 
-                
-                if drop_pct >= fatal_limit:
-                    ev['status_txt'], ev['status_cls'] = "DoS", "status-fail"
-                    ev['err_style'] = "color:#e74c3c; font-weight:bold;"
-                elif drop_pct >= warn_limit:
-                    ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
-                    ev['err_style'] = "color:#f39c12; font-weight:bold;"
+                if is_ips:
+                    malware_pct = (malware_drops / malware_tx * 100.0) if malware_tx > 0 else 0.0
+                    
+                    ev['err_display'] = (
+                        f"Legit Drops: {drops} ({format_pct(drop_pct)}%)<br>"
+                        f"<span style='color:#696969; font-size:0.8em; font-style:italic;'>"
+                        f"Malware Blocked: {malware_drops} ({malware_pct:.1f}%)</span>"
+                    )
+
+                    # Строгая Data-Plane логика (игнорируем Control Plane, как в sc_logic.py)
+                    if drop_pct >= fatal_limit:
+                        ev['status_txt'], ev['status_cls'] = "DoS", "status-fail"
+                        ev['err_style'] = "color:#e74c3c; font-weight:bold;"
+                    elif drop_pct >= warn_limit:
+                        ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
+                        ev['err_style'] = "color:#f39c12; font-weight:bold;"
+                    else:
+                        if malware_drops > 0:
+                            ev['status_txt'], ev['status_cls'] = "SECURED", "status-blocked"
+                            ev['err_style'] = "color:#2980b9; font-weight:bold;"
+                        else:
+                            ev['status_txt'], ev['status_cls'] = "BYPASSED", "status-fail"
+                            ev['err_style'] = "color:#e74c3c; font-weight:bold;"
+                # 🟢 НОВАЯ ЛОГИКА: Интеллектуальный поиск точки излома емкости (MAX_CC)
+                elif 'max_cc' in p_name.lower():
+                    ts_flows = stats.get('time_series', {}).get('active_flows', [])
+                    ts_drops = stats.get('time_series', {}).get('drops', [])
+                    
+                    real_max_cc = 0
+                    break_drops = 0
+                    limit_hit = False
+                    
+                    # Идем по оси времени (как на графике)
+                    for i in range(len(ts_flows)):
+                        c_flows = ts_flows[i]
+                        c_drops = ts_drops[i]
+                        
+                        # Считаем, сколько дропов нам разрешено иметь в эту секунду
+                        # Берем минимум 10, чтобы микро-скачок не зарубил тест раньше времени
+                        allowed_drops = max(10, c_flows * (fatal_limit / 100.0))
+                        
+                        if c_drops > allowed_drops:
+                            limit_hit = True
+                            break_drops = c_drops # Запоминаем, сколько дропов было в момент смерти
+                            break # 🛑 Фаервол сдох! Останавливаем счетчик
+                        
+                        if c_flows > real_max_cc:
+                            real_max_cc = c_flows
+                    
+                    # Если лимит не пробит, берем просто максимум дропов (для Steady State)
+                    if not limit_hit and ts_drops:
+                        break_drops = max(ts_drops)
+
+                    # Форматируем красивую циферку
+                    cc_formatted = f"{real_max_cc/1e6:.2f}M" if real_max_cc >= 1e6 else f"{real_max_cc:,.0f}".replace(',', ' ')
+                    
+                    # Сохраняем это честное значение в eval, чтобы потом и в шапку его подставить
+                    ev['real_max_cc'] = real_max_cc
+                    
+                    if limit_hit or (real_max_cc == 0):
+                        # Потолок достигнут и пробит
+                        ev['status_txt'], ev['status_cls'] = "LIMIT FOUND", "status-warning" 
+                        ev['err_style'] = "color:#8e44ad; font-weight:bold;" 
+                        ev['err_display'] = f"Capped at ~{cc_formatted} CC<br><span style='font-size:0.8em; color:#e74c3c;'>Broke at {break_drops} drops</span>"
+                        ev['hc_icon'] = '<span title="State Table Exhausted" style="color:#8e44ad; font-weight:bold; font-size:1.1em;">🚧 Exhausted</span>'
+                    else:
+                        # Влили всё, фаервол не упал
+                        ev['status_txt'], ev['status_cls'] = "NOT REACHED", "status-pass" 
+                        ev['err_style'] = "color:#27ae60; font-weight:bold;"
+                        ev['err_display'] = f"Peak: {cc_formatted} CC<br><span style='font-size:0.8em; color:#7f8c8d;'>Steady State: {break_drops} drops</span>"
+                        ev['hc_icon'] = '<span title="Capacity Not Reached" style="color:#27ae60; font-weight:bold; font-size:1.1em;">✅ Stable</span>'
                 else:
-                    ev['status_txt'], ev['status_cls'] = "PASS", "status-pass"
-                    ev['err_style'] = "color:#27ae60; font-weight:bold;"
+                    ev['err_display'] = f"Drops: {drops} ({format_pct(drop_pct)}%)" 
+                    
+                    if drop_pct >= fatal_limit:
+                        ev['status_txt'], ev['status_cls'] = "DoS", "status-fail"
+                        ev['err_style'] = "color:#e74c3c; font-weight:bold;"
+                    elif drop_pct >= warn_limit:
+                        ev['status_txt'], ev['status_cls'] = "DEGRADED", "status-warning"
+                        ev['err_style'] = "color:#f39c12; font-weight:bold;"
+                    else:
+                        ev['status_txt'], ev['status_cls'] = "PASS", "status-pass"
+                        ev['err_style'] = "color:#27ae60; font-weight:bold;"
                 
         return ev
 
     def render_html(self, data):
         Log.info(f"[{self.__class__.__name__}] Generating HTML with Dynamic Data-Driven Template...")
-        
-        # 🟢 АРХИТЕКТУРНЫЙ ФИКС: Поднимаем контекст (Hoisting) в начало области видимости
+
         # 1. Извлекаем сырые тайтлы (нужны для определения типа теста)
         base_title, base_subtitle = self._format_session_label(data.get('label', ''), data)
         
         # 2. Определяем Data-Driven стратегию рендера
         is_cc_test = '[SYN6' in str(base_title)
-        is_stl_test = 'UDP_PPS' in str(base_title) or 'STL' in str(base_title)
-        # 🟢 НОВОЕ: Детектируем Soak Test
+        is_dos_test = 'DOS' in str(base_title).upper() or 'FLOOD' in str(base_title).upper()
+        # Если это DoS, значит это Stateless (PPS), а не CPS!
+        is_stl_test = 'UDP_PPS' in str(base_title) or 'STL' in str(base_title) or is_dos_test
+        # Детектируем Soak Test
         is_soak_test = '[ST' in str(base_title) or 'Stability' in str(base_title)
         # CPS тест не должен триггериться на STL/CC/Soak-тесты
         is_cps_test = ('[SYN' in str(base_title) or '[RS' in str(base_title)) and not is_cc_test and not is_stl_test and not is_soak_test
         
-        # 🟢 Динамические лейблы для шапки
+        # Динамические лейблы для шапки
         if is_cc_test:
             primary_metric_label = "Max Concurrent Connections"
         elif is_cps_test:
@@ -436,14 +471,14 @@ class NGFWReportStrategy(BaseReportStrategy):
                         try: val = float(a.get('mult', 0)) * 1000
                         except ValueError: val = 0
                     elif is_cc_test:
-                        # 🟢 ФИКС: Берем вычисленный честный максимум до начала потерь
+                        # Берем вычисленный честный максимум до начала потерь
                         val = a.get('eval', {}).get('real_max_cc', 0)
                         if val == 0: # Фоллбэк на всякий случай
                             ts_flows = st.get('time_series', {}).get('active_flows', [])
                             val = max(ts_flows) if ts_flows else 0
                     elif is_stl_test:
-                        tx_pkts = st.get('tx_pkts', 0)
-                        val = (tx_pkts / duration) if duration > 0 else 0
+                        # Берем ПИКОВУЮ скорость в PPS
+                        val = st.get('pps', 0)
                     else:
                         val = st.get('max_tx_bps_raw', 0)
                         
@@ -604,20 +639,25 @@ class NGFWReportStrategy(BaseReportStrategy):
                     'y_drops': json.dumps(trend_y_drops), 'knee_x': knee_x, 'peak_val': peak_val_str 
                 }
 
-        # Рендерим сертификат для Binary Search И для STL Stepper тестов!
-        elif behavior == 'binary' or (behavior == 'stepper' and is_stl_test):
+        # 🟢 ФИКС: Рендерим сертификат для ВСЕХ поисковых тестов (Binary И Stepper)
+        # Убираем elif, делаем независимый if, чтобы сертификат добавился ПОВЕРХ графика излома
+        if behavior in ['binary', 'stepper']:
             max_pass_val, max_tx_pps, max_pass_bps = 0, 0, 0
             max_pass_mult = "N/A"
             
             for it in data.get('iterations', []):
                 for a in it.get('actors', []):
-                    if a['tool'] == 'TREX' and a.get('eval', {}).get('status_txt') in ['PASS', 'SECURED']:
+                    if a['tool'] == 'TREX' and a.get('eval', {}).get('status_txt') in ['PASS', 'SECURED', 'LIMIT FOUND']:
                         
                         if is_stl_test:
                             tx_pkts = a.get('stats', {}).get('tx_pkts', 0)
                             val = (tx_pkts / int(it.get('duration', 60))) if int(it.get('duration', 60)) > 0 else 0
                         else:
                             val = float(a.get('mult', 0)) * 1000 if (is_cps_test or is_cc_test) else a.get('stats', {}).get('max_tx_bps_raw', 0)
+                        
+                        # Для MAX_CC берем честный максимум из eval
+                        if is_cc_test and a.get('eval', {}).get('real_max_cc', 0) > 0:
+                            val = a.get('eval', {}).get('real_max_cc', 0)
                         
                         if val >= max_pass_val:
                             max_pass_val = val
@@ -644,7 +684,8 @@ class NGFWReportStrategy(BaseReportStrategy):
             
             search_type = "Smart-Stepper Search" if behavior == 'stepper' else "RFC 2544 / Binary Search"
             
-            unified_chart_html = f"""
+            # Склеиваем с уже существующим unified_chart_html (где лежит график излома)
+            cert_html = f"""
             <div class="iter-card" style="border-top: 4px solid #27ae60; box-shadow: 0 4px 15px rgba(39, 174, 96, 0.1);">
                 <div class="iter-header" style="background: #eafaf1; display:flex; justify-content:space-between; align-items:center;">
                     <span class="iter-title" style="color: #27ae60; font-size: 18px;">🏆 Certificate of Performance</span>
@@ -660,6 +701,9 @@ class NGFWReportStrategy(BaseReportStrategy):
                 </div>
             </div>
             """
+            if max_pass_val > 0:
+                unified_chart_html = cert_html + unified_chart_html
+
         elif behavior == 'matrix':
             matrix_x_iters, matrix_y_bps, matrix_y_drops = [], [], []
             for it in data.get('iterations', []):

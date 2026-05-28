@@ -118,6 +118,12 @@ TABLE_ROW_TEMPLATE = """
 
 LINK_TEMPLATE = '<a href="{path}" class="btn {style}" target="_blank">{icon}</a>'
 
+NAV_TEMPLATE = """
+<div class="nav-menu" style="margin-bottom: 20px;">
+    <strong>Архив:</strong> {links}
+</div>
+"""
+
 # ─────────────────────────────────────────────────────────────
 # LOGIC & EXTRACTION
 # ─────────────────────────────────────────────────────────────
@@ -275,12 +281,77 @@ def generate_html():
 
     return BASE_TEMPLATE.format(total_runs=len(runs), body="".join(body_parts), generated_ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
+def get_nav_menu(sorted_months, counts):
+    links = []
+    for m in sorted_months:
+        # Для текущего (последнего) месяца — index.html, для остальных — файлы
+        filename = "index.html" if m == sorted_months[0] else f"archive_{m.replace('-', '_')}.html"
+        label = f"{m} ({counts[m]})"
+        style = "font-weight: bold;" if m == sorted_months[0] else ""
+        links.append(f'<a href="{filename}" style="{style} margin-right: 15px;">{label}</a>')
+    return NAV_TEMPLATE.format(links=" | ".join(links))
+
+def generate_month_html(month, runs, nav_menu):
+    """Генерирует HTML для конкретного месяца"""
+    body = nav_menu
+    
+    # Группируем по дням внутри месяца
+    by_day = {}
+    for r in runs: by_day.setdefault(r['day_key'], []).append(r)
+    sorted_days = sorted(by_day.keys(), reverse=True)
+    
+    for day in sorted_days:
+        day_runs = by_day[day]
+        first = day_runs[0]
+        rows_html = "".join([TABLE_ROW_TEMPLATE.format(
+            dir_name=r['dir_name'],
+            dut_name=r['meta']['dut_name'],
+            status_icon=r['meta']['status_icon'],
+            status_text=r['meta']['status_text'],
+            scenario_name=r['meta']['scenario_name'],
+            sec_badge=r['meta']['sec_badge'],
+            main_metric=r['meta']['main_metric'],
+            links_html="".join([LINK_TEMPLATE.format(**lnk) for lnk in r['links']])
+        ) for r in day_runs])
+        
+        body += DAY_GROUP_TEMPLATE.format(
+            day_label=first['day_label'],
+            weekday=first['weekday'],
+            rows_html=rows_html
+        )
+    
+    return BASE_TEMPLATE.format(total_runs=len(runs), body=body, generated_ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+def run_generator():
+    runs = get_test_runs()
+    if not runs: return
+    
+    by_month = {}
+    for r in runs:
+        month = r['day_key'][:7]
+        by_month.setdefault(month, []).append(r)
+        
+    sorted_months = sorted(by_month.keys(), reverse=True)
+    counts = {m: len(by_month[m]) for m in sorted_months}
+    nav_menu = get_nav_menu(sorted_months, counts)
+    
+    results_dir = get_results_dir()
+    
+    for i, month in enumerate(sorted_months):
+        filename = 'index.html' if i == 0 else f'archive_{month.replace("-", "_")}.html'
+        out_path = os.path.join(results_dir, filename)
+        
+        # Генерируем HTML и сохраняем
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(generate_month_html(month, by_month[month], nav_menu))
+        print(f"Generated: {out_path}")
+
 if __name__ == '__main__':
     if '--generate' in sys.argv:
-        out_file = os.path.join(get_results_dir(), 'index.html')
-        try:
-            with open(out_file, 'w', encoding='utf-8') as f: f.write(generate_html())
-            print(f"Dashboard updated: {out_file}")
-        except Exception as e: print(f"Error: {e}")
+        run_generator()
     else:
-        print(generate_html())
+        # Для отладки выводим только текущий месяц
+        runs = get_test_runs()
+        if runs:
+            latest_month = sorted(list(set([r['day_key'][:7] for r in runs])), reverse=True)[0]
+            print(generate_month_html(latest_month, [r for r in runs if r['day_key'][:7] == latest_month], ""))

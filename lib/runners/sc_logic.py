@@ -388,7 +388,14 @@ def _run_binary_search(runner, scenario_id, conf, data):
     max_iterations = 15 
     
     while (max_val - min_val) > precision and iteration <= max_iterations:
-        mid_val = int((min_val + max_val) / 2) if precision >= 1 else (min_val + max_val) / 2.0
+        if precision >= 1:
+            mid_val = int((min_val + max_val) / 2)
+        else:
+            # Вычисляем количество знаков после запятой в precision и добавляем +1 знак (резерв для шага деления)
+            # Если precision = 0.1, округляем до 2 знаков. Если 0.05 -> до 3 знаков.
+            decimals = len(str(precision).split('.')[-1]) + 1 if '.' in str(precision) else 3
+            mid_val = round((min_val + max_val) / 2.0, decimals)
+            
         Log.info(f"\n{Colors.CYAN}--- Binary Search Итерация {iteration} | Проверяем нагрузку: {mid_val} ---{Colors.ENDC}")
         
         try:

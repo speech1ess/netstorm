@@ -213,6 +213,7 @@ def _evaluate_health(runner, step_conf, run_index):
     # Инициализируем переменные нулями для страховки
     l2_tx, l2_rx, l2_drops, l2_drop_pct = 0, 0, 0, 0.0
     l7_tx, l7_rx, l7_drops, l7_drop_pct = 0, 0, 0, 0.0
+    ips_blocks, malware_sent = 0, 0  # 🟢 Добавили
     
     log_dir = os.path.join(SharedConfig.get('paths.logs', '/opt/pmi/logs'), runner.session_id)
     
@@ -251,6 +252,9 @@ def _evaluate_health(runner, step_conf, run_index):
                     l7_rx = kpi.get('l7_rx_flows', 0)
                     l7_drops = kpi.get('l7_drops', 0)
                     l7_drop_pct = kpi.get('l7_drop_pct', 0.0)
+                    # 🟢 Забираем Security-метрики
+                    ips_blocks = kpi.get('ips_blocks', 0)
+                    malware_sent = kpi.get('malware_sent', 0)
 
             except Exception as e:
                 Log.error(f"❌ [Data Plane] Failed to parse TRex telemetry via Analyzer: {e}")
@@ -267,16 +271,25 @@ def _evaluate_health(runner, step_conf, run_index):
         Log.error("💀 FATAL: TRex reported 0 TX packets/flows. No traffic was generated.")
         return "FATAL", 0.0, ping_ok
 
-    # Выводим кристально чистые логи
-    Log.info(f"📊 [Data Plane - L2] Frames TX: {l2_tx} | RX: {l2_rx} | Drops: {l2_drops} ({l2_drop_pct:.4f}%)")
-    if is_astf:
-        Log.info(f"📊 [Data Plane - L7] Sessions TX: {l7_tx} | RX: {l7_rx} | Drops: {l7_drops} ({l7_drop_pct:.4f}%)")
-        
-    thresholds = dut_conf.get('thresholds') or dut_conf.get('tresholds') or {}
+    thresholds = dut_conf.get('thresholds') or {}
     WARN_LIMIT = float(thresholds.get('warn', 0.05))
     FATAL_LIMIT = float(thresholds.get('fatal', 0.1))
+
+    # Выводим кристально чистые логи
+    Log.info(f"📊 [Data Plane - L2] Frames TX: {l2_tx} | RX: {l2_rx} | Drops: {l2_drops} ({l2_drop_pct:.4f}%)")
     
-    Log.info(f"⚙️ Limits applied -> WARN: {WARN_LIMIT}%, FATAL: {FATAL_LIMIT}%")
+    if is_astf:
+        Log.info(f"📊 [Data Plane - L7] Legit Sessions TX: {l7_tx} | RX: {l7_rx} | Drops: {l7_drops} ({l7_drop_pct:.4f}%)")
+        
+        # 🟢 Выводим статистику IPS, если малварь была в запуске
+        if malware_sent > 0:
+            block_pct = (ips_blocks / malware_sent) * 100.0
+            SEC_BLOCK_MIN = float(thresholds.get('malware_block', 100.0)) # Исправлена опечатка
+            
+            Log.info(f"🛡️  [Security Plane] Malware Sent: {malware_sent} | IPS Blocks: {ips_blocks} | Block Rate: {block_pct:.2f}%")
+            Log.info(f"⚙️ Limits applied -> WARN: {WARN_LIMIT}%, FATAL: {FATAL_LIMIT}%, SEC_MIN: {SEC_BLOCK_MIN}%")
+        else:
+            Log.info(f"⚙️ Limits applied -> WARN: {WARN_LIMIT}%, FATAL: {FATAL_LIMIT}%")
 
     # =========================================================================
     # 🟢 4. ЛОГИКА СУДЕЙСТВА: Умный алгоритм (NetSecOPEN / RFC 9411 Style)
@@ -311,10 +324,15 @@ def _evaluate_health(runner, step_conf, run_index):
     # =========================================================================
     # 5. ПРИНЯТИЕ ФИНАЛЬНОГО РЕШЕНИЯ
     # =========================================================================
+    if is_astf and malware_sent > 0:
+        if block_pct < SEC_BLOCK_MIN:
+            Log.error(f"💀 FATAL: Security Bypass! Blocked only {block_pct:.2f}% (Required: {SEC_BLOCK_MIN}%). DUT operates as a dumb router!")
+            return "FATAL", deciding_drop_pct, ping_ok
+
     if deciding_drop_pct < WARN_LIMIT:
         if not ping_ok:
             Log.info("Data Plane is clean! Ignoring Control Plane failure.")
-        Log.success(f"🏥 Health Check Passed (Max drops: {deciding_drop_pct:.4f}%). Ready for next step.")
+        Log.success(f"🏥 Health Check Passed (Max legit drops: {deciding_drop_pct:.4f}%). Ready for next step.")
         return "OK", deciding_drop_pct, ping_ok
         
     elif WARN_LIMIT <= deciding_drop_pct < FATAL_LIMIT:

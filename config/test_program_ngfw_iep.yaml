@@ -7,7 +7,11 @@
 program:
   description: "NGFW: Матрица деградации, емкость, инфраструктурная устойчивость"
   dut:
-    label: "UserGate DCFW E3010 (UGOS 8.0.0.361689R) [FW, AppID, IPS, GeoIP]" # "Континент 4 (v.4.2.1.-758)" # "UserGate DCFW E1010 [L3 Inline Mode]" # "--=Calibration run=--"
+#    label: "--=Calibration run=--" #
+#    label: "UserGate DCFW E3010 (UGOS 8.0.0.361689R) [FW]" # [FW, AppID, IPS, GeoIP]
+#    label: "UserGate DCFW E1010 (UGOS 8.0.0.361689R) [FW]" # [FW, AppID, IPS, GeoIP]
+#    label: "Континент 4 (v.4.2.1-758) [FW, AppID, GeoIP, IPS]" #[♿ FW, AppID, GeoIP, IPS]
+    label: "PT NGFW 2010 (v.1.10.2) [FW, AppID, GeoIP]"
     type: "NGFW"
     mgmt_ip: "10.0.40.5"  # healthcheck
     datapath:
@@ -16,6 +20,7 @@ program:
     thresholds:        # потери пакетов (в процентах)
       warn: 0.0005
       fatal: 0.001
+      malware_block: 97
 
 # =========================================================
 # ШАБЛОНЫ
@@ -124,7 +129,7 @@ profiles:
     udp_flood_64b:
       script: "stl_udp_flood.py"
       tunables:
-        <<: *STL_Route
+        <<: *ASTF_Route
     stl_udp_microburst:
       script: "stl_udp_microburst.py"
       tunables:
@@ -232,30 +237,28 @@ scenarios:
           overrides:
             actors:
               astf_http_cps: { overridemult: { start: 50, step: 10 } }
-    SYN4_UDP_PPS_STEP:
-      type: "series"
-      label: "UDP PPS Capacity Smart-Stepper Search [SYN4_UDP_PPS_STEP] (30K --+2K--> 5 steps)"
+    SYN4_UDP_PPS_PFR:
+      label: "UDP PPS Peak Forwarding Rate Search [SYN4_UDP_PPS_PFR] (10-20Mpps)"
       prompt: "[INFO]: Ищем аппаратный потолок PPS."
-      health_check: true
-      repeats: 5         # Количество ступенек (например, 10 ступенек дойдут до 10M PPS)
-      interval: 30        # Длительность одной ступеньки
-      template:
-        duration: 240
-        actors:
-          - tool: "trex"
-            profile: "udp_flood_64b"
-            overridemult: { start: 30, step: 2 }            
+      health_check: false
+      duration: 600
+      actors:
+        - tool: "trex"
+          profile: "udp_flood_64b"
+          tunables:
+            auto_stop: true
+            rampup_sec: 300
       presets:
-        low_res:
-          label: "🐢 40K --+2K--> 5 steps"
+        low:
+          label: "🐢 10Mpps"
           overrides:
             actors:
-              udp_flood_64b: { overridemult: { start: 40, step: 2 } }
-        high_res:
-          label: "🏃 45K --+1K--> 5 steps"
+              udp_flood_64b: { overridemult: 10000 }
+        high:
+          label: "🏃 20Mpps"
           overrides:
             actors:
-              udp_flood_64b: { overridemult: { start: 45, step: 1 } }
+              udp_flood_64b: { overridemult: 20000 }
     SYN5_TCP_BIN:
       type: "series"
       label: "TCP CPS Limit Binary Search [SYN5_TCP_BIN] (10k-200k CPS)"
@@ -274,13 +277,13 @@ scenarios:
       presets:
         limit_100k:
           label: "🏢 Enterprise (Max 50k CPS, precision 1)"
-          overrides: { series: { type: "binary_search", min: 10, max: 50, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 10, max: 60, precision: 1 } }
         limit_500k:
           label: "☁️ DataCenter (Max 100k CPS, precision 1)"
-          overrides: { series: { type: "binary_search", min: 20, max: 100, precision: 1 } }
+          overrides: { series: { type: "binary_search", min: 20, max: 110, precision: 1 } }
         limit_mellanox:
           label: "🚀 Mellanox Mode (Max 500k CPS, precision 5)"
-          overrides: { series: { type: "binary_search", min: 100, max: 500, precision: 5 } }
+          overrides: { series: { type: "binary_search", min: 100, max: 550, precision: 5 } }
     SYN6_MAX_CC:
       label: "Max Concurrent Connections Limit Search [SYN6_MAX_CC] (State Table Exhaustion)"
       prompt: "[INFO]: Ищем предел оперативной памяти (RAM) и таблицы трансляций NGFW."
@@ -289,7 +292,7 @@ scenarios:
       actors:
         - <<: *TRex_ASTF
           profile: astf_max_cc  
-          overridemult: 10 
+          overridemult: 15 
       presets:
         target_1m: 
           label: "🎯 Target: 1M Sessions (2 мин)"
@@ -323,6 +326,9 @@ scenarios:
         - <<: *TRex_ASTF
           profile: "astf_emix_perim" 
       presets:
+        limit_2g:
+          label: "♿ Специальная олимпиада (< 2 Gbps, precision: 0.1)"
+          overrides: { series: { type: "binary_search", min: 0.1, max: 2, precision: 0.1 } }
         limit_10g:
           label: "🥉 Entry (Up to 10 Gbps, precision: 1)"
           overrides: { series: { type: "binary_search", min: 1, max: 10, precision: 1 } }
@@ -331,7 +337,10 @@ scenarios:
           overrides: { series: { type: "binary_search", min: 5, max: 30, precision: 1 } }
         limit_50g:
           label: "🥇 High-End (Up to 50+ Gbps, precision: 2)"
-          overrides: { series: { type: "binary_search", min: 20, max: 50, precision: 2 } }
+          overrides: { series: { type: "binary_search", min: 20, max: 50, precision: 1 } }
+        limit_100g:
+          label: "☢️ Ultimate (Up to 100 Gbps, precision: 2)"
+          overrides: { series: { type: "binary_search", min: 20, max: 85, precision: 1 } }
     CAP2_NDR_WE:
       type: "series"
       label: "West-East NDR Binary Search [CAP2_NDR_WE] (DataCenter Mix)"
@@ -348,6 +357,9 @@ scenarios:
         - <<: *TRex_ASTF
           profile: "astf_emix_dc" 
       presets:
+        limit_2g:
+          label: "♿ Специальная олимпиада (< 2.5 Gbps, precision: 0.1)"
+          overrides: { series: { type: "binary_search", min: 0.1, max: 2, precision: 0.1 } }
         limit_10g:
           label: "🥉 Entry (Up to 10 Gbps), precision: 1"
           overrides: { series: { type: "binary_search", min: 1, max: 10, precision: 1 } }
@@ -355,14 +367,18 @@ scenarios:
           label: "🥈 Mid-Range (Up to 30 Gbps), precision: 1"
           overrides: { series: { type: "binary_search", min: 5, max: 30, precision: 1 } }
         limit_50g:
-          label: "🥇 High-End (Up to 50+ Gbps), precision: 2"
-          overrides: { series: { type: "binary_search", min: 20, max: 50, precision: 2 } }
+          label: "🥇 High-End (Up to 50+ Gbps), precision: 1"
+          overrides: { series: { type: "binary_search", min: 20, max: 55, precision: 1 } }
+        limit_100g:
+          label: "☢️ Ultimate (Up to 100 Gbps, precision: 1)"
+          overrides: { series: { type: "binary_search", min: 20, max: 85, precision: 1 } }
     # --- ШАГ 2.2: ИНТЕРАКТИВНАЯ МАТРИЦА ---
     CAP3_PD_NS:
       type: "series"
       label: "North-South Degradation Matrix [CAP3_PD_NS] (Perimeter Mix)"
-      prompt: "[INFO]: СЕРИЯ (5 шагов). Включайте функции NGFW накопительно в паузах между тестами (для тестов с включенным IPS установить чекбокс 'Malware Overlay'):\n1) IPS\n2) FW (L3+L4)\n3) FW (L3+L4) + DPI\n4) FW (L3+L4) + DPI + IPS\n5) FW (L3+L4) + DPI + IPS + GeoIP"
-      repeats: 5
+      #      prompt: "[INFO]: СЕРИЯ (5 шагов). Включайте функции NGFW накопительно в паузах между тестами (для тестов с включенным IPS установить чекбокс 'Malware Overlay'):\n1) IPS\n2) FW (L3+L4)\n3) FW (L3+L4) + DPI\n4) FW (L3+L4) + DPI + IPS\n5) FW (L3+L4) + DPI + IPS + GeoIP"
+      prompt: "[INFO]: СЕРИЯ (4 шага). Включайте функции NGFW накопительно в паузах между тестами (для тестов с включенным IPS установить чекбокс 'Malware Overlay'):\n1) FW (L3+L4)\n2) FW (L3+L4) + DPI\n3) FW (L3+L4) + DPI + IPS\n4) FW (L3+L4) + DPI + IPS + GeoIP"
+      repeats: 4
       interactive: true
       template:
         duration: 180
@@ -548,27 +564,25 @@ scenarios:
               baseline: { threads: 400, override_tput: 4000 }
               astf_tcp_cps: { overridemult: 50 }
     RS4_DOS:
-      label: "L4 Volumetric Flood [RS4_DOS] (QoS & CPU Resilience)"
-      prompt: "[INFO]: JMeter создает легитимный L7-фон. TRex генерирует аппаратный флуд. Анализируйте 502/504 ошибки в JMeter во время атаки."
+      label: "L4 Volumetric Flood Attack [RS4_DOS] (QoS & CPU Resilience)"
+      prompt: "[INFO]: JMeter создает легитимный L7-фон, TRex генерирует аппаратный флуд через 90 сек. после старта. Оцениваем толерантность к DDoS, доступность и скорость восстановления DUT."
       duration: 180 
       actors:
         # --- Актор 1: Легитимные пользователи (Фон L7) ---
         - <<: *JMeter_Base
-          duration: 180 
+          duration: 300 
         # --- Актор 2: Атакующий ботнет (TRex L2/L4) ---
         - tool: "trex"
           profile: "syn_flood"     
           delay: 90                
-          duration: 60             
-          tunables:
-            dst_ip: "{{ nodes.victim.net.ip }}"
+          duration: 60
       presets:
         flood_syn:
-          label: "💣 1M pps SYN Flood (Session Table Exhaustion)"
+          label: "💣 6M pps SYN Flood IEP-style (Session Table Exhaustion)"
           overrides: 
             actors: 
-              baseline: { threads: 100, override_tput: 1000 }
-              syn_flood: { overridemult: 1000 } 
+              baseline: { threads: 120, override_tput: 1000 }
+              syn_flood: { overridemult: 6000 }
         flood_udp_pps:
           label: "💣 14M pps UDP Flood (64-Byte PPS Wall Exhaustion)"
           overrides: 
@@ -576,13 +590,12 @@ scenarios:
               baseline: { threads: 100, override_tput: 1000 }
               syn_flood: 
                 profile: "udp_flood_64b" 
-                overridemult: 14000      
-                tunables: { dst_ip: "{{ nodes.victim.net.ip }}" }
+                overridemult: 14000
     # --- Cluster Stress & Infrastructure Chaos Tests ---
     RS5_HA:
-      label: "Infrastructure Chaos Cluster Test [RS5_HA] (HA State Sync Stress)"
-      prompt: "[WARNING]: ВНИМАНИЕ! На 60-й секунде теста АППАРАТНО ВЫКЛЮЧИТЬ ПИТАНИЕ/ИНТЕРФЕЙС активной ноды. Проверяем бесшовность сессий."
-      duration: 180
+      label: "Infrastructure Chaos Cluster Test [RS5_HA] (HA State Sync Stress, Perimeter Mix)"
+      prompt: "[WARNING]: ВНИМАНИЕ! После выхода на полку (на 120-й секунде теста) АППАРАТНО ВЫКЛЮЧИТЬ ПИТАНИЕ/ИНТЕРФЕЙС активной ноды. Проверяем бесшовность сессий."
+      duration: 240
       actors:
         - <<: *TRex_ASTF
           profile: astf_emix_perim 
@@ -604,8 +617,8 @@ scenarios:
             actors:
               astf_emix_perim: { overridemult: 15 }
     RS6_COMMIT:
-      label: "Config Commit Under Load [RS6_COMMIT] (Control Plane Stress)"
-      prompt: "[WARNING]: ВНИМАНИЕ! Запустите тест. Дождитесь выхода на полку (60-120 сек). Примените набор политик ('Commit/Install'). \nКритерий успеха: 0 дропов трафика и доступный Web-UI во время коммита."
+      label: "Config Commit Under Load [RS6_COMMIT] (Control Plane Stress, Perimeter Mix)"
+      prompt: "[WARNING]: ВНИМАНИЕ! Запустите тест. Дождитесь выхода на полку (120 сек). Примените набор политик ('Commit/Install'). \nКритерий успеха: 0 дропов трафика и доступный Web-UI во время коммита."
       duration: 300 
       health_check: true
       actors:

@@ -3,8 +3,8 @@
 
 # Настройки оркестратора
 NS_NAME="vlan500-jmeter"
-BASE_IPS="/opt/pmi/profiles/jmeter/source_ips.csv"
-ATTACK_IPS="/opt/pmi/profiles/jmeter/attack_ips.csv"
+BASE_IPS="/opt/pmi/profiles/jmeter/data/source_ips.csv"
+ATTACK_IPS="/opt/pmi/profiles/jmeter/data/attack_ips.csv"
 TMP_BATCH="/tmp/ip_batch_cmd.txt"
 
 # 2. Автоопределение интерфейса в netns (исключая lo)
